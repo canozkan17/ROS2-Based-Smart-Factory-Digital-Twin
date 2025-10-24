@@ -1,0 +1,75 @@
+## Feature Engineering Report
+
+This report provides a detailed summary of the feature engineering process applied to the CMAPSS dataset. Building on the insights from the Exploratory Data Analysis (EDA), the steps focused on data preprocessing, transformation, and augmentation to prepare the dataset for predictive modeling of Remaining Useful Life (RUL). The process addressed key EDA findings such as outliers, unit inconsistencies, high correlations, temporal dependencies, and data imbalance, resulting in a robust, model-ready dataset.
+
+**General Approach and Objectives**
+Aimed to enhance data quality, reduce noise, and capture predictive patterns for RUL estimation in predictive maintenance. 
+Key principles included:
+- **Physical Interpretability**: Mapping sensors to machine stations (e.g., Hydraulic Press, CNC Milling) to align with real-world industrial contexts.
+- **Scalability and Consistency**: Unit conversions and normalization to ensure comparability across datasets (FD001-FD004).
+- **Dimensionality Reduction**: Removing redundant or biased features to mitigate multicollinearity and improve model efficiency.
+- **Temporal Feature Extraction**: Incorporating time-series aggregations to model degradation trends.
+- **Data Augmentation and Balance**: Synthetic data generation and resampling to handle class imbalance in regression tasks.
+
+The process transformed raw sensor data into a feature-rich dataset optimized for machine learning, with a focus on low-RUL predictions (critical for maintenance).
+
+**Detailed Steps and Impacts**
+1. **Outlier Handling (Cell 50)**:
+   - **Method**: Replaced outliers (|z-score| > 3) with median values per feature to preserve data distribution and size.
+   - **Rationale**: EDA revealed minimal outliers (e.g., <20 per sensor in train1), but these could skew models. Median replacement is robust for skewed data.
+   - **Impact**: Reduced extreme values without data loss. 
+   
+   Output: "Outlier replacement completed for all train and test datasets." Ensured model stability by minimizing the influence of abnormal engine conditions.
+
+2. **Dataset Mapping and Unit Conversions (Cells 51-53)**:
+   - **Mapping**: Sensors were mapped to industrial stations (e.g., Hydraulic Press: HPC_Outlet_Temp, HPC_Outlet_Press; CNC Milling: Physical_Fan_Speed, Physical_Core_Speed). Defined operational ranges (e.g., Temp: 30-80°C for Hydraulic Press).
+   - **Unit Conversions**: Temperatures converted from Rankine (°R) to Celsius (°C) (formula: °C = (°R - 491.67) * 5/9); pressures from psia to bar (bar = psia * 0.0689476).
+   - **Rationale**: EDA showed values in non-standard units; conversions align with industrial sensors. Mapping provides domain context for feature interpretation.
+   - **Impact**: Improved physical realism and interpretability. 
+   
+   Output: "Sensor conversion successful." Enabled machine-specific normalization in later steps.
+
+3. **Normalization and Feature Cleaning (Cells 54-61)**:
+   - **Normalization**: Applied min-max scaling using dynamic ranges (quantile-based: 0.001-0.999) per machine and unit, followed by sigmoid transformation for 0-1 range. Clipped to -1 to 2 for robustness.
+   - **Cleaning**: Removed bias sensors (CMAPSS standard indices: 5,6,10,16,18,19) and original columns, retaining only scaled features, 'unit', and 'cycle'.
+   - **Rationale**: EDA correlations (e.g., 0.92-0.98) indicated multicollinearity; normalization standardized scales. Bias removal followed domain guidelines to avoid noise.
+   - **Impact**: Dataset shape reduced (e.g., train1 from ~25 to ~10-15 columns). 
+   
+   Output: Shape prints (e.g., "Cleaned dataset 0: Shape (20631, 12)"). Histogram showed scaled features with std >0.05, confirming variance preservation.
+
+4. **RUL Calculation and Addition (Cells 62-64)**:
+   - **Train RUL**: Calculated as max(cycle) - cycle per unit, clipped to 0-125.
+   - **Test RUL**: Mapped from external RUL files (constant per unit).
+   - **Rationale**: EDA emphasized RUL as the target, with strong sensor correlations (e.g., Engine_Press_Ratio: -0.85).
+   - **Impact**: Added continuous target variable. 
+   
+   Output: Stats (e.g., train1 mean~100, test1 mean~128). Ensured accurate labeling for regression.
+
+5. **Window-Based Feature Aggregation (Cells 65-68)**:
+   - **Method**: Computed rolling mean, std, and variance over 30-cycle windows (min_periods=1), forward-filled NaNs.
+   - **Rationale**: EDA time-series analysis showed degradation trends (e.g., Engine_Press_Ratio decreasing). Windows capture temporal dynamics for predictive maintenance.
+   - **Impact**: Expanded features (e.g., ~3x increase). 
+   
+   Output: Shape growth (e.g., train1: ~20k rows). Preserved RUL integrity (0 NaNs post-fill).
+
+6. **Dataset Merging and Feature Selection (Cells 69-74)**:
+   - **Merging**: Concatenated all train datasets into 'full_merged' (~80k rows).
+   - **Selection**: Used Random Forest importance (>0.01 threshold) and dropped highly correlated features (>0.95). Retained ~20 features.
+   - **Rationale**: EDA suggested prioritizing high-RUL-correlated features; merging increased sample diversity.
+   - **Impact**: Output: "Selected features count: 20". Visualizations (bar plot for importance, heatmap for correlations) confirmed reduced redundancy.
+
+7. **Synthetic Data Integration and Balance (Cells 75-80)**:
+   - **Synthetic Generation**: Created 5000 samples with baseline + drift (0.1 * std) + noise (0.05 * std), fault injection (e.g., Physical_Fan_Speed *1.5 post-cycle 50), and RUL clipping.
+   - **Balance**: Applied undersampling on binary RUL (<=50) to balance classes.
+   - **Rationale**: EDA noted data imbalance; synthetic data added variety and fault scenarios for better generalization.
+   - **Impact**: Merged dataset (~85k rows). 
+   
+   Output: RUL stats (mean~75-80), drift checks (e.g., fan speed ~1.5x post-fault). Improved model robustness for low-RUL cases.
+
+**Success Metrics and Outputs**
+- **Dataset Evolution**: Started with ~60k raw rows; ended with ~85k processed rows, ~20 scaled + aggregated features.
+- **Quality Checks**: No NaNs post-fillna; RUL distributions balanced (mean~75-80); correlations with key sensors (e.g., cycle: ~-0.9, fan speed: ~-0.3).
+- **Model Integration**: Prepared for XGBRegressor training (Cells 82-85), achieving MAE <10, RMSE appropriate, with weighted low-RUL emphasis. CV MAE <10; residuals tight for low RUL.
+- **Visual Outputs**: Histograms, bar plots, heatmaps, and residual plots validated transformations.
+
+This feature engineering pipeline, grounded in EDA insights, produced a high-quality dataset for RUL prediction, emphasizing predictive maintenance efficiency and accuracy.
