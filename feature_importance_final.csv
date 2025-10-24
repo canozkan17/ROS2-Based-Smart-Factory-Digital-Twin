@@ -1,0 +1,14 @@
+feature,importance
+HPC_Outlet_Static_Press_Scaled,0.108859845
+HPC_Outlet_Press_Scaled,0.04887646
+Corrected_Fan_Speed_Scaled,0.11627526
+HPC_Outlet_Temp_Scaled_mean,0.057990275
+HPT_Cool_Air_F_Scaled_mean,0.05601764
+Corrected_Core_Speed_Scaled_mean,0.049768917
+Bleed_Enthalpy_Scaled_mean,0.089730255
+LPT_Outlet_Temp_Scaled_mean,0.12853852
+Fan_Inlet_Temp_Scaled_mean,0.11736548
+Fan_Inlet_Press_Scaled_mean,0.046809368
+Engine_Press_Ratio_Scaled_mean,0.05887858
+Engine_Press_Ratio_Scaled,0.022618353
+Fan_Inlet_Press_Scaled,0.09827105
