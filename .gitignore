@@ -13,3 +13,4 @@ __pycache__/
 *.log
 *.db
 *.egg-info/
+old_training.ipynb
