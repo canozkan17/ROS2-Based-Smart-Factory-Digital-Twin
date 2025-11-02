@@ -1,3 +1,26 @@
+Older studies show digital twins help factories run smoother and make smart decisions on their own. Take, for example, a two-way digital twin setup used in plastic molding - it uses guided learning along with deep reinforcement learning to keep virtual models fresh while boosting performance, cutting costs, and lifting product standards, all with almost no human input [@khdoudi2024deep]. That shows how powerful real-time feedback loops can be, much like how this project uses controller nodes that act on machine-learning suggestions (like REDUCE_LOAD) to tweak sensor behavior and cut downtime in simulations by a quarter. In another case, systems powered by reinforcement learning improve forecasting across equipment life spans, especially when planning maintenance or guiding robots using probabilistic models [@wang2024sustainable]. These examples support using RL-style prevention methods in our design, even though we lean more on regression models (XGBoost or LSTM trained on CMAPSS data) instead of full reinforcement learning to keep edge processing fast - under 50 milliseconds.
+
+
+
+Ros2 helps link digital twins with physical systems, using separate modules to swap messages - instead of just one chain, pieces work alone but stay in sync. One example: a six-joint robot arm runs its digital version inside Ros2, handling sim tasks, live control, and fine-tuning performance, while OPC UA handles cross-system talk, making virtual setup smoother [@almohamed2025development]. That fits the current project’s Ros2 Jazzy layout - each part like sensor_node or predictor_node runs solo, passing data through channels like /machine_X/sensors or /machine_X/predictions, sometimes adding Gazebo for live 3D views. Beyond that, another setup uses changeable assembly units where digital twins track operations on-the-fly, assigning jobs by skill level using Ros2 coded in Python, helping humans and machines adjust fast [@wilhelm2025digital]. The system spreads tasks across nodes instead of centralizing, shaping a small-to-mid scale MVP (handles 2 up to 6 machines), schedules work via JSON, balances load using PuLP, keeps delays under 50ms per node - even when running on virtual setups or edge hardware like Raspberry Pi.
+
+A reliable system for helping decisions in digital twin simulations uses reinforcement learning models along with similarity checks to fix slow computing issues - tested on a battery production line to boost forecast precision when data is scarce [@pires2023reinforcement]. Although this work emphasizes machine learning predictions instead of suggesting scenarios, it influenced the design of an edge AI predictor_node that runs ONNX-optimized code for under 20ms responses, allowing early adjustments and cutting down the need for lengthy simulations.
+Robotic digital twins using reinforcement learning help shift skills from sim to real life. A ViperX arm runs a Unity-ROS2 synced twin where Soft Actor-Critic learning shapes decisions through layered rewards, adapting routes while cutting errors - results show fast training success across fixed and changing scenarios [@ali2025digital]. This supports looped workflows: fake sensor data, built with drift and noise tricks, fuels predictions on remaining lifespan, prompting fixes before breakdowns happen - tests hit over 80% precision using 5-round cross-checks on NASA CMAPSS plus Fraunhofer data.
+
+
+These papers [@khdoudi2024deep; @wang2024sustainable; @almohamed2025development; @wilhelm2025digital; @pires2023reinforcement; @ali2025digital] set the base for AI-backed maintenance using ROS2-run digital twins; however, hardly any focus shifts toward full virtual scale-up under synthetic data conditions while handling edge limits. What's introduced steps in by offering live, plug-and-play twin models - small version handles 2 machines, full version scales to 6 - comes with Streamlit dashboards, Raspberry Pi as an alternative host option, and clear KPIs (RUL over 80%, 25% less downtime) - pushing software design further for agile factory setups.
+
+
+
+
+
+
+
+
+
+
+
+
 CAPSTONE PROJECT PROPOSAL
 
 PROJECT TITLE
@@ -50,7 +73,7 @@ V.I Resources
 V.II Constraints
 Limited to 6 machines (MVP: 2); fully virtual with optional real sensor injection; synthetic data for consistency.
 V.III Risks & Mitigation
-Technical: ML accuracy <80%,  Mitigate with 5-fold CV and fallback anomaly detection. 
+Technical: ML accuracy <80%, Mitigate with 5-fold CV and fallback anomaly detection. 
 Timeline: Integration delays, Use Agile sprints with weekly checkpoints and biweekly reports. 
 Edge latency >50ms: Simulate CPU limits early; optimize with 8-bit quantization. 
 Data realism: Calibrate noise/drift against CMAPSS; optional USB sensor for validation.
