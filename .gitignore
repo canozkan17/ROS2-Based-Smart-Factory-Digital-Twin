@@ -15,3 +15,4 @@ __pycache__/
 *.egg-info/
 CMAPSS_ML_training.ipynb
 pump_features_rul.csv
+pump_rul_hrs.csv
