@@ -37,3 +37,6 @@ Other machines and datasets are planned for future integration.
 
 ## Project Philosophy & Updates
 This README will be updated as new models, datasets, and architectural improvements are added. The focus remains on modular, scalable, and high-accuracy predictive maintenance for industrial digital twins.
+
+As of November 2025, the project has been moved from a casual Windows-side folder into a proper WSL environment under ~/capstone_project. Git history was preserved during the move. The Python virtual environment (venv/) was re-created in WSL, and dependencies are now managed via requirements.txt. This marks the start of the ROS2 implementation. 
+
