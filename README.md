@@ -22,21 +22,44 @@ Other machines and datasets are planned for future integration.
 
 ![Project Architecture](Data_Communication_Flow.png)
 
-- **Predictor Node:** Listens to six ROS2 topics, dispatches incoming messages to the correct expert model, and performs inference in RAM for low latency. All models are loaded at startup.
-- **Controller Node:** Receives RUL predictions and makes maintenance decisions. Initially rule-based, with RL agent integration planned for learning optimal strategies in simulated environments.
+### Node Structure & Implementation Status
 
-## Current Progress
+- **machine_hydraulic_press_node** and **machine_process_pump_node**:  
+  Skeletons for these nodes have been established. They are intended to simulate sensor data streams for the hydraulic press and process pump, respectively. However, synthetic sensor data generation is not yet implemented.
+- **job_scheduler_node**:  
+  The initial structure is present, with TODOs outlining future scheduling logic and integration points.
+- **temp_gui_node**:  
+  A temporary, console-based GUI node is available for basic interaction and monitoring. This will be replaced by a Streamlit-based dashboard in future iterations.
+- **central_predictor_dispatcher_node** (Planned):  
+  This node will be responsible for distributing incoming sensor data to the appropriate expert models (pre-trained XGBoost regressors) and returning RUL predictions. Not yet implemented.
+
+#### ROS2 Node Graph
+
+![ROS2 Node Graph](rqt_graph_1.png)
+
+> The node graph above illustrates the current ROS2 communication structure. Note that several nodes are in the setup phase and do not yet produce or consume real sensor data.
+
+## Has Been: Pre-ROS2 Work
+
 - **Hydraulic Press Model:** Trained using the UCI Hydraulic Systems dataset. Full pipeline includes feature extraction, stratified train-test splitting, scaling, XGBoost regression, and drift diagnostics. Model and scaler are saved for deployment.
 - **Process Pump Model:** Trained using the Water Pump RUL dataset as a proxy for hydraulic pump RUL prediction. Similar pipeline and diagnostics applied.
 - **Diagnostics:** Feature importance, drift analysis, and performance metrics are generated and saved for both models.
+- **Project Migration:** As of November 2025, the project was moved from a Windows folder to a WSL environment under ~/capstone_project. Git history was preserved. Python virtual environment (venv/) was re-created, and dependencies are managed via requirements.txt.
+
+## Current Progress (ROS2 & Beyond)
+- ROS2 node skeletons for hydraulic press and process pump established.
+- job_scheduler_node structure created, with future scheduling logic outlined.
+- temp_gui_node implemented for basic monitoring; Streamlit migration planned.
+- Initial ROS2 communication graph visualized via rqt_graph.
+- Models and diagnostics from pre-ROS2 phase ready for integration.
 
 ## Next Steps
-- Integrate additional machines and datasets as listed above.
-- Develop and test the RL-based Controller Node for dynamic maintenance and load balancing.
-- Deploy models on Edge AI hardware and validate latency and accuracy targets in real-world scenarios.
+- Implement synthetic sensor data generation for all machine nodes.
+- Develop and integrate central_predictor_dispatcher_node to route sensor data to expert models and return RUL predictions.
+- Create a 2 way hand-shake between nodes for communication.
+- Add controler_node and its functions for responding to the predictions from the dispatcher. 
+- Test job sequence and complete MVP 
+
 
 ## Project Philosophy & Updates
 This README will be updated as new models, datasets, and architectural improvements are added. The focus remains on modular, scalable, and high-accuracy predictive maintenance for industrial digital twins.
-
-As of November 2025, the project has been moved from a casual Windows-side folder into a proper WSL environment under ~/capstone_project. Git history was preserved during the move. The Python virtual environment (venv/) was re-created in WSL, and dependencies are now managed via requirements.txt. This marks the start of the ROS2 implementation. 
-

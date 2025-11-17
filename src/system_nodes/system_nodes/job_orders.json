@@ -58,5 +58,25 @@
         "priority": "high",
         "surface_quality_mm": 0.5,
         "tolerance_mm": 0.1
+    },
+    {
+        "job_name": "TEST",
+        "job_ID": "TTS",
+        "machine_ID": "hydraulic_press",
+        "part_type": "metal_sheet",
+        "material": "st3",
+        "part_thickness_mm": 5,
+        "part_weight_kg": 5,
+        "pressure_level": "low",
+        "process_type": "forming",
+        "press_force_ton": 5,
+        "produce_amount": 12,
+        "cycles_per_part": 5,
+        "total_cycle_count": 60,
+        "cycle_duration_sec": 5,
+        "temperature_C": 5,
+        "priority": "high",
+        "surface_quality_mm": 5,
+        "tolerance_mm": 5
     }
 ]
