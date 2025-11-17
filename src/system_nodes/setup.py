@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'hydraulic_press_sensor = system_nodes.Machine_Hydraulic_Press_Node:main',
             'process_pump_sensor = system_nodes.Machine_Process_Pump_Node:main',
+            'job_scheduler = system_nodes.Job_Scheduler_Node:main',
         ],
     },
 )
