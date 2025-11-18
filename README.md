@@ -5,8 +5,8 @@ This project aims to build a ROS2-based Digital Twin for predictive maintenance 
 
 ### Key Philosophy
 - **Expert Models:** Six specialized models are trained, each tailored to the unique physics and failure modes of its respective machine.
-- **Controller Node:** RUL predictions are used by a controller node to implement rule-based maintenance actions, with future plans to upgrade to a Reinforcement Learning (RL) agent for optimal maintenance and load balancing.
-- **Target Metrics:** RUL prediction accuracy >80%, latency <50ms per node, and >25% reduction in downtime (RL vs rule-based).
+- **Controller Node:** RUL predictions are used by a controller node to implement rule-based maintenance actions load balancing.
+- **Target Metrics:** RUL prediction accuracy >80%, latency <50ms per node, and >25% reduction in downtime.
 
 ## Machine List & Dataset Mapping
 Only the following datasets are used in the current implementation:

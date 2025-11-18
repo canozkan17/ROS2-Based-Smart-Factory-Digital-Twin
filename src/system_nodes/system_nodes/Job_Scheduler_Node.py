@@ -55,14 +55,18 @@ class Job_Scheduler_Node(Node):
         # Job setup
         self.job_finished = False
         self.job_number = 000
-        self.target_job = None
+        self.target_job = {}
+        self.user_input_received = False
+        self.job_order = []
+        self.process_order = []
+        self.process_finished = False
 
     
     
-    # Callback Functions Block                                                                        !! REMAINING TO DO !!
+    # Callback Functions Block                                                                        !! REMAINING TODO !!
     #--------------------
     
-    # Callback for User Input                                                            !! REMAINING TO DO !!
+    # Callback for User Input                                                            !! REMAINING TODO !!
     def listener_user_input_callback(self, msg: String):
         """
         Callback function for User Input subscription.
@@ -71,12 +75,20 @@ class Job_Scheduler_Node(Node):
         try:
             user_input_data = json.loads(msg.data)  # JSON string to dict
             self.get_logger().info(f"Received User Input item: {user_input_data}")
-        # TO DO : Process user_input_data as necessary
+            self.user_input_received = True
+            self.job_order.append(user_input_data)
+            self.process_order.append(user_input_data.get('process_order'))
+            self.schedule_conducter()
+            
+
+
+
+        # TODO : Process user_input_data as necessary
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
         
         
-    # Callback for maintenance queue                                                            !! REMAINING TO DO !!
+    # Callback for maintenance queue                                                            !! REMAINING TODO !!
     def listener_maintenance_queue_callback(self, msg: String):
         """
         Callback function for Maintenance Queue subscription.
@@ -84,22 +96,23 @@ class Job_Scheduler_Node(Node):
         """
         self.get_logger().info(f"Received Maintenance Queue item: {msg.data}")
         
-        # Simulate job order re-organization                                                    !! REMAINING TO DO !!
+        # Simulate job order re-organization                                                    !! REMAINING TODO !!
         job_order = String()
         job_order.data = f"Job Order: {msg.data}"
         
         self.publisher_job_orders.publish(job_order)
         self.get_logger().info(f"Published Job Order: {job_order.data}")
-    # Callback for Completed                                                                    !! REMAINING TO DO !!
+    # Callback for Completed                                                                    !! REMAINING TODO !!
     def listener_completed_callback(self, msg: String):
         """
         Callback function for Completed  subscription.
         Processes control commands for corrective/preventative actions.
         """
+
+        # listen for process_finished signal
         self.get_logger().info(f"Received Completed item: {msg.data}")
     
     #--------------------
-
 
     def publish_job_orders(self):
         """
@@ -107,14 +120,52 @@ class Job_Scheduler_Node(Node):
         """
         job_order_msg = String()
 
-        # For Hydraulic Press Machine
-        job_order_msg.data = json.dumps({
-                                            "sender": self.get_name(),
-                                            "data": True
-                                        })
-        
-        self.publisher_job_orders.publish(job_order_msg)
+        self.target_job = self.job_order[0]
 
+        self.get_logger().info(
+                                    f"Next job to produce: {self.target_job.get('job_name')}, "
+                                    f"Order of production: {self.process_order[0]}"
+                                )
+
+        
+        job_order_msg.data = json.dumps(self.target_job)
+        self.publisher_job_orders.publish(job_order_msg)
+    
+    def schedule_conducter(self):
+        """
+        Control job_order and process_order lists.
+        Conduct publishing of job orders based on completion status.
+        """
+
+        # !! TODO : will be updated according to job order reschedule logic + Completed message!!
+        while rclpy.ok():
+
+            if self.job_number == 000:
+                
+
+
+
+            # following the completion of a job
+            if self.job_finished:
+                if self.job_order:
+                    self.job_order.pop(0)           # Remove the published job order
+                self.job_finished = False           # Reset job finished flag
+
+            # following the completion of process
+            elif self.process_finished:
+                if self.process_order:
+                    self.process_order.pop(0)       # Remove the completed process
+                self.process_finished = False   # Reset process finished flag
+
+            if self.job_order:
+                self.publish_job_orders()
+            time.sleep(1)  # Sleep to prevent busy-waiting
+
+
+    def load_balancer(self):
+        """
+        Load balancer to manage job scheduling.
+        """
         
 
 
