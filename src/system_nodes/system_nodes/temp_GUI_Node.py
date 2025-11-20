@@ -68,20 +68,11 @@ class temp_GUI_Node(Node):
         self.example_json = '''{{
                                 "job_name": "New Job Name",
                                 "job_ID": "3-4 letter code",
-                                "machine_ID": "hydraulic_press / process_pump",
                                 "part_type": "metal_sheet / other ",
                                 "material": "type of material (e.g., st37, aluminium)",
                                 "part_thickness_mm": number,
                                 "part_weight_kg":  number,
-                                "pressure_level": "low / medium / high",
-                                "process_type": "forming / bending / deep_bending / bending_and_piercing",
-                                "press_force_ton": number,
-                                "produce_amount": null,
-                                "cycles_per_part": number,
-                                "total_cycle_count": null,
-                                "cycle_duration_sec": number,
-                                "temperature_C": number,
-                                "priority": "high / medium / low",
+                                "process_type": ["bending", "forming", "drilling", "grooving", "pocketing", "assembling", "quality_control"],
                                 "surface_quality_mm": number,
                                 "tolerance_mm": number
                         }}'''
@@ -89,8 +80,7 @@ class temp_GUI_Node(Node):
         print("\n == Welcome to the Job Scheduler! ==\n")
         self.order_collect_main()
 
-    def total_cycle_calculator(self, produce_amount, cycles_per_part):
-            return produce_amount * cycles_per_part
+
 
     def job_selecting(self):
             
@@ -114,10 +104,14 @@ class temp_GUI_Node(Node):
                 
                     # Get user input for production amount
                     produce_amount = int(input("Enter the production amount:             "))
+
+                    # Get user to verify or enter job priority for load balancing
+                    priority = input(f"-->'{self.target_job['job_name']}' order's current priority is '{self.target_job['priority']}'.\n Enter new priority or press Enter to keep it: ").strip().lower()
+                    if priority:
+                        self.target_job["priority"] = priority
                     
                     self.target_job["produce_amount"] = produce_amount
-                    self.target_job["total_cycle_count"] = self.total_cycle_calculator(produce_amount, self.target_job["cycles_per_part"])
-
+                
                     print(f"\n Selected Job Order: {self.target_job['job_name']}")
                     print("\n Published order")
                     
@@ -140,19 +134,20 @@ class temp_GUI_Node(Node):
                 try:
                     job_order_data = json.loads(job_order_input)
                     job_name_input = job_order_data["job_name"]
-                    job_ID = job_order_data["job_ID"]
-
+                    
                     # check if the entered job already exists
                     if self.job_entry_check(job_name_input):
                         print(f"\nERROR: Job name '{job_name_input}' already exists as a job order. Please enter a unique job name.")
                         input("\nPress Enter to try again...")
                         continue
 
-
+                    # Get user input for production amount
                     produce_amount = int(input("Enter the production amount:             "))
-                    
                     job_order_data["produce_amount"] = produce_amount
-                    job_order_data["total_cycle_count"] = self.total_cycle_calculator(produce_amount, job_order_data["cycles_per_part"])
+
+                    # Get user input for job priority for load balancing
+                    priority = input("Enter the job priority (low / medium / high): ").strip().lower()
+                    job_order_data["priority"] = priority
 
                     # first read the existing job orders from JSON file
                     file_path = os.path.join(os.path.dirname(__file__), "job_orders.json")

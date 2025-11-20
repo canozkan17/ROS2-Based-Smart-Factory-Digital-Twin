@@ -1,1 +1,1 @@
-/home/can_ozkan/capstone_project/build/system_nodes/system_nodes/launch/multi_node_launch.py
+/home/canozkan/Capstone_Project/build/system_nodes/system_nodes/launch/multi_node_launch.py

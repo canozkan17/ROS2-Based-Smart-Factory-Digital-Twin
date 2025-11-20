@@ -32,17 +32,14 @@ class Job_Scheduler_Node(Node):
         super().__init__('Job_Scheduler_Node')
         
         # Subscription to User Input
-        self.subscription_user_input = self.create_subscription(String, 'User_Input', self.listener_user_input_callback, 10)
-        
+        self.subscription_user_input = self.create_subscription(String, 'User_Input', self.listener_user_input_callback, 10)        
         # Subscription to Maintenance Queue
         self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_maintenance_queue_callback, 10)
-    
         # Subscription to Completed
         self.subscription_completed = self.create_subscription(String, 'Completed', self.listener_completed_callback, 10)
         
         # Publisher for Job Orders data
         self.publisher_job_orders = self.create_publisher(String, "Job_Orders", 10)
-
         # Publisher for Production Log status
         self.publisher_production_log = self.create_publisher(String, "Production_Log", 10)
         
@@ -53,20 +50,138 @@ class Job_Scheduler_Node(Node):
         self.get_logger().info("Listening on 'Completed' topic.")
 
         # Job setup
-        self.job_finished = False
-        self.job_number = 000
-        self.target_job = {}
-        self.user_input_received = False
         self.job_order = []
-        self.process_order = []
+        self.target_job = {}
+        self.job_id_list = []
+        self.running_operations = {} # key: machine_id, value: task
+        self.pending_operations = []
+        self.completed_operations = set()
+    
+        # Control flags
         self.process_finished = False
+        self.user_input_received = False
 
+    def generate_job_ID(self, user_input_data) -> str:
+        """
+        Generate a unique job ID.
+        """
+        # Initialize job_ID with 000 suffix
+        if user_input_data['job_ID'] not in self.job_id_list:
+            self.job_id_list.append(user_input_data['job_ID']) 
+            user_input_data['job_ID'] = (f"{user_input_data['job_ID']}000")  
+        else: # If job_ID already exists, increment the suffix
+            existing_jobs = [job for job in self.job_order if job['job_ID'].startswith(user_input_data['job_ID'])]
+            suffix_numbers = [int(job['job_ID'][-3:]) for job in existing_jobs]
+            new_suffix = max(suffix_numbers) + 1
+            user_input_data['job_ID'] = (f"{user_input_data['job_ID']}{str(new_suffix).zfill(3)}")
+
+        return user_input_data
     
+    def select_machine_for_process(self, process_name):
+        """"
+        Select machine based on the process name.
+        """
+        
+        machine_process_map = {
+                        "bending": "hydraulic_press",
+                        "forming": "hydraulic_press",
+                        "drilling": "cnc",
+                        "grooving": "cnc",
+                        "pocketing": "cnc",
+                        "assembling": "robot_arm",
+                        "quality_control": "robot_arm"
+                    }
+        
+        if process_name in machine_process_map:
+            return machine_process_map[process_name]
+        else:
+            return "unknown_machine"
+        
+    def total_time_calculator(self, produce_amount, process_name, material) -> int:
+        """
+        Calculate total time required for a process based on produce amount and material.
+        """
+        
+        process_time_map = {
+                            "bending": {
+                                            "DC01_ZE": 30,
+                                            "Stainless_304": 45,
+                                            "Aluminium_6082_T6": 25
+                                        },
+                            "forming": {
+                                            "DC01_ZE": 40,
+                                            "Stainless_304": 60,
+                                            "Aluminium_6082_T6": 35
+                                        },
+                            "drilling": {
+                                            "DC01_ZE": 50,
+                                            "Stainless_304": 70,
+                                            "Aluminium_6082_T6": 40
+                                        },
+                            "grooving": {
+                                            "DC01_ZE": 45,
+                                            "Stainless_304": 65,
+                                            "Aluminium_6082_T6": 35
+                                        },
+                            "pocketing": {
+                                            "DC01_ZE": 60,
+                                            "Stainless_304": 80,
+                                            "Aluminium_6082_T6": 50
+                                        },
+                            "assembling": {
+                                            "DC01_ZE": 90,
+                                            "Stainless_304": 90,
+                                            "Aluminium_6082_T6": 90
+                                        },
+                            "quality_control": {
+                                                "DC01_ZE": 60,
+                                                "Stainless_304": 60,
+                                                "Aluminium_6082_T6": 60
+                                            }
+                        }
+        if process_name in process_time_map and material in process_time_map[process_name]:
+            time_per_part = process_time_map[process_name][material]
+            total_time = produce_amount * time_per_part
+            return total_time
+        else:
+            self.get_logger().error(f"Unknown process '{process_name}' or material '{material}' for time calculation.")
+            return 0
+        
+    def add_new_job(self, user_input_data):
+        # Generate unique job ID
+        user_input_data = self.generate_job_ID(user_input_data)
+        # Extract first process and remaining processes
+        for i in range(len(user_input_data['process_order'])):  
+            firs_process = user_input_data['process_order'][i]
+            
+
+            # Define task
+            task = {
+                "task_ID": user_input_data['job_ID'] + "_" + firs_process,
+                "job_ID": user_input_data['job_ID'],
+                "priority": user_input_data['priority'],
+                "process": firs_process,
+                "machine": self.select_machine_for_process(firs_process),
+                "depending_on": None if i == 0 else user_input_data['process_order'][i-1],  # None for first process, else previous process
+                "total_time": self.total_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material'])
+
+            }
+            # Add job to job order list
+            self.pending_operations.append(task)
+        self.job_order.append(user_input_data)
+
+    def is_machine_available(self, machine_id): #!! REMAINING TODO !!
+        """
+        Check if the specified machine is available.
+        """
+        if machine_id in self.running_operations:
+            return False
+        else:
+            return True
     
-    # Callback Functions Block                                                                        !! REMAINING TODO !!
+    # Callback Functions Block
     #--------------------
-    
-    # Callback for User Input                                                            !! REMAINING TODO !!
+    # Callback for User Input
     def listener_user_input_callback(self, msg: String):
         """
         Callback function for User Input subscription.
@@ -74,16 +189,15 @@ class Job_Scheduler_Node(Node):
         """
         try:
             user_input_data = json.loads(msg.data)  # JSON string to dict
-            self.get_logger().info(f"Received User Input item: {user_input_data}")
-            self.user_input_received = True
-            self.job_order.append(user_input_data)
-            self.process_order.append(user_input_data.get('process_order'))
+            self.get_logger().info(
+                                    f"\nReceived User Input item: '{user_input_data['job_name']}'"
+                                    f"\nProduction Amount: {user_input_data['produce_amount']} "
+                                    )
+            
+            self.user_input_received = True     
+            self.add_new_job(user_input_data)       
             self.schedule_conducter()
             
-
-
-
-        # TODO : Process user_input_data as necessary
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
         
@@ -109,27 +223,28 @@ class Job_Scheduler_Node(Node):
         Processes control commands for corrective/preventative actions.
         """
 
-        # listen for process_finished signal
+        # listen for process_finished signal & job_ID number
+        completed_data = json.loads(msg.data)
         self.get_logger().info(f"Received Completed item: {msg.data}")
+        self.completed_task = completed_data
+        self.process_finished = True
+        self.schedule_conducter()
     
     #--------------------
 
-    def publish_job_orders(self):
+    def publish_job_orders(self, ready_tasks=None):
         """
-        Publish job order to the Job_Orders topic.
+        Publish next order (target job) to the Job_Orders topic.
+        Removes the published job from the job_order list.
         """
         job_order_msg = String()
 
-        self.target_job = self.job_order[0]
 
-        self.get_logger().info(
-                                    f"Next job to produce: {self.target_job.get('job_name')}, "
-                                    f"Order of production: {self.process_order[0]}"
-                                )
-
-        
-        job_order_msg.data = json.dumps(self.target_job)
+        # Publish the ready task
+        job_order_msg.data = json.dumps(ready_tasks if ready_tasks else [])
         self.publisher_job_orders.publish(job_order_msg)
+        self.get_logger().info(f"Published Job Orders: {job_order_msg.data}")
+ 
     
     def schedule_conducter(self):
         """
@@ -138,36 +253,63 @@ class Job_Scheduler_Node(Node):
         """
 
         # !! TODO : will be updated according to job order reschedule logic + Completed message!!
-        while rclpy.ok():
+        
+        
+        if self.user_input_received:
+            ready_tasks = self.load_balancer()
+            if ready_tasks:
+                self.publish_job_orders(ready_tasks)
+                # remove the published task from pending operations and add to running operations
+                for task in ready_tasks:
+                    self.pending_operations.remove(task)
+                    self.running_operations[task['machine']] = task
+            self.user_input_received = False
+        
+        
+        # following the completion of process
+        if self.process_finished:
+            for task in self.pending_operations:
+                if task['depending_on'] == self.completed_task['process']:
+                    task['depending_on'] = None  # Mark dependency as resolved 
+            # add the completed task to completed operations
+            self.completed_operations.add(self.completed_task['task_ID'])
 
-            if self.job_number == 000:
-                
-
-
-
-            # following the completion of a job
-            if self.job_finished:
-                if self.job_order:
+            # remove the completed task from running operations
+            machine_id = self.completed_task['machine']
+            if self.completed_task['task_ID'] == self.running_operations[machine_id]['task_ID']:
+                del self.running_operations[machine_id]
+            
+            self.process_finished = False                # Reset process finished flag
+            ready_tasks = self.load_balancer()           # Rebalance jobs according to the new/remaining tasks
+            self.publish_job_orders(ready_tasks)         # Publish the next job orders
+            
+            # check for job completion
+            for task in self.pending_operations:
+                if self.completed_task['job_ID'] != task['job_ID']:
                     self.job_order.pop(0)           # Remove the published job order
-                self.job_finished = False           # Reset job finished flag
+    
+    
 
-            # following the completion of process
-            elif self.process_finished:
-                if self.process_order:
-                    self.process_order.pop(0)       # Remove the completed process
-                self.process_finished = False   # Reset process finished flag
-
-            if self.job_order:
-                self.publish_job_orders()
-            time.sleep(1)  # Sleep to prevent busy-waiting
-
-
+    # Load Balancer Function
+    # TODO: Expand in maintenance queue callback
     def load_balancer(self):
         """
         Load balancer to manage job scheduling.
+        Sorts task orders by priority, total cycle count, and arrival time (FIFO).
         """
+        priority_map = {"high": 0, "medium": 1, "low": 2}
+        ready_tasks = [t for t in self.pending_operations if t['depending_on'] is None and self.is_machine_available(t['machine'])]
         
-
+        ready_tasks.sort(
+                            key=lambda t: (
+                                            priority_map.get(t['priority'], 3), # Sort by primarily priority (high to low)
+                                            t['total_time'],                    # Sort by total_time (lower is higher priority)(SJF)
+                                            int(t['job_ID'][-3:])               # Sort by arrival time (FIFO based on job_ID suffix)
+                                          )
+                        )
+        return ready_tasks
+        
+        
 
 
 def main(args=None):
