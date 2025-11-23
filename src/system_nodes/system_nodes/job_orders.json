@@ -6,6 +6,8 @@
         "material": "DC01_ZE",
         "process_order": ["forming","drilling", "assembling"],
         "priority": "medium",
+        "part_weight_kg": 2.3,
+        "part_thickness_mm": 1.5,
         "surface_quality_mm": 0.4,
         "tolerance_mm": 0.2
     },
@@ -16,6 +18,8 @@
         "material": "Stainless_304",
         "process_order": ["bending", "drilling","grooving", "assembling"],
         "priority": "high",
+        "part_weight_kg": 3.1,
+        "part_thickness_mm": 2.0,
         "surface_quality_mm": 0.3,
         "tolerance_mm": 0.15
     },
@@ -26,6 +30,8 @@
         "material": "Aluminium_6082_T6",
         "process_order": ["forming", "pocketing","drilling", "quality_control", "assembling"],
         "priority": "high",
+        "part_weight_kg": 5.8,
+        "part_thickness_mm": 10.0,
         "surface_quality_mm": 0.5,
         "tolerance_mm": 0.1
     }

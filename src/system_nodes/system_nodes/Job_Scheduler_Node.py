@@ -16,6 +16,7 @@ Publishes status to Production_Log Topic.
 
 from std_msgs.msg import String
 from rclpy.node import Node
+from typing import Dict, Any
 import rclpy
 import json
 import time
@@ -61,7 +62,7 @@ class Job_Scheduler_Node(Node):
         self.process_finished = False
         self.user_input_received = False
 
-    def generate_job_ID(self, user_input_data) -> str:
+    def generate_job_ID(self, user_input_data) -> Dict[str, Any]:
         """
         Generate a unique job ID.
         """
@@ -97,7 +98,7 @@ class Job_Scheduler_Node(Node):
         else:
             return "unknown_machine"
         
-    def total_time_calculator(self, produce_amount, process_name, material) -> int:
+    def task_time_calculator(self, produce_amount, process_name, material) -> int:
         """
         Calculate total time required for a process based on produce amount and material.
         """
@@ -141,14 +142,16 @@ class Job_Scheduler_Node(Node):
                         }
         if process_name in process_time_map and material in process_time_map[process_name]:
             time_per_part = process_time_map[process_name][material]
-            total_time = produce_amount * time_per_part
-            return total_time
+            task_time = produce_amount * time_per_part
         else:
-            self.get_logger().error(f"Unknown process '{process_name}' or material '{material}' for time calculation.")
-            return 0
+            self.get_logger().error(f"Unknown process '{process_name}' or material '{material}' for time calculation. Falling back to default time of 45.")
+            task_time = 45 * produce_amount
+            
+        return task_time
         
-    def add_new_job(self, user_input_data):
+    def add_new_job(self, user_input_data: Dict[str, Any]):
         # Generate unique job ID
+
         user_input_data = self.generate_job_ID(user_input_data)
         # Extract first process and remaining processes
         for i in range(len(user_input_data['process_order'])):  
@@ -163,8 +166,14 @@ class Job_Scheduler_Node(Node):
                 "process": firs_process,
                 "machine": self.select_machine_for_process(firs_process),
                 "depending_on": None if i == 0 else user_input_data['process_order'][i-1],  # None for first process, else previous process
-                "total_time": self.total_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material'])
-
+                "task_time": self.task_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material']),
+                "part_weight_kg": user_input_data['part_weight_kg'],
+                "part_thickness_mm": user_input_data['part_thickness_mm'],
+                "surface_quality_mm": user_input_data["surface_quality_mm"],
+                "tolerance_mm": user_input_data["tolerance_mm"],
+                "produce_amount": user_input_data["produce_amount"],
+                "produce_amount": user_input_data["produce_amount"],
+                "material": user_input_data["material"],
             }
             # Add job to job order list
             self.pending_operations.append(task)
@@ -303,7 +312,7 @@ class Job_Scheduler_Node(Node):
         ready_tasks.sort(
                             key=lambda t: (
                                             priority_map.get(t['priority'], 3), # Sort by primarily priority (high to low)
-                                            t['total_time'],                    # Sort by total_time (lower is higher priority)(SJF)
+                                            t['task_time'],                    # Sort by task_time (lower is higher priority)(SJF)
                                             int(t['job_ID'][-3:])               # Sort by arrival time (FIFO based on job_ID suffix)
                                           )
                         )

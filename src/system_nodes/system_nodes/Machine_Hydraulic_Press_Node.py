@@ -1,81 +1,77 @@
 #!/usr/bin/env python3
 
 """
-ROS2 Node for generating synthetic sensor data for Hydraulic Press Machine.
+Listenes to Job Orders, and Maintenance Queue topics.
+Publishes to Sensors and Completed topics.
 
-Subscribes to Job_Orders topic for data generation. 
-Subscribes to Control_CMD topic for corrective/preventative actions.
-
-Publishes generated data to Sensors topic.
-Publishes status to Completed Topic. 
+Handles tasks for the Hydraulic Press machine.
 """
 
-import rclpy
-from rclpy.node import Node
 from std_msgs.msg import String
+from rclpy.node import Node
+import rclpy
+import json
+import time
+import os
 
-class Machine_Hydraulic_Press_Sensor_Node(Node):
-    """ROS2 Node for generating synthetic sensor data for Hydraulic Press Machine."""
-
+class Machine_Hydraulic_Press_Node(Node):
     def __init__(self):
-        """
-        Initialize the Hydraulic Press Sensor node, set up subscriptions and publishers.
-        """
-        super().__init__('Machine_Hydraulic_Press_Sensor_Node')
+        super().__init__('Machine_Hydraulic_Press_Node')
         
         # Subscription to Job Orders
-        self.subscription_job_order = self.create_subscription(String, 'Job_Orders', self.listener_job_orders_callback, 10)
-    
-        # Subscription to Control CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD', self.listener_callback_control_cmd, 10)
-        
-
+        self.subscription_job_orders = self.create_subscription(String, 'Job_Orders', self.listener_job_orders_callback, 10)        
+        # Subscription to Maintenance Queue
+        self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_maintenance_queue_callback, 10)
+                
         # Publisher for Sensors data
         self.publisher_sensors = self.create_publisher(String, "Sensors", 10)
-
         # Publisher for Completed status
         self.publisher_completed = self.create_publisher(String, "Completed", 10)
         
-        self.get_logger().info("Hydraulic Press Sensor node ready!")
+        # Set-up logs
+        self.get_logger().info("Machine Hydraulic Press node ready!")
         self.get_logger().info("Listening on 'Job_Orders' topic.")
-        self.get_logger().info("Listening on 'Control_CMD' topic.")
+        self.get_logger().info("Listening on 'Maintenance_Queue' topic.")
+        self.get_logger().info("Listening on 'Completed' topic.")
 
-    
-    # Callback functions
-    #--------------------
-    # Callback for Job Orders
+        # Variable set-up
+        self.job_queue = []
+
+
     def listener_job_orders_callback(self, msg: String):
         """
         Callback function for Job Orders subscription.
-        Generates synthetic sensor data based on job orders.
         """
-        self.get_logger().info(f"Received Job Order: {msg.data}")
-        
-        # Simulate sensor data generation
-        sensor_data = String()
-        sensor_data.data = f"Synthetic Sensor Data for Job Order: {msg.data}"
-        
-        self.publisher_sensors.publish(sensor_data)
-        self.get_logger().info(f"Published Sensor Data: {sensor_data.data}")
+        try: 
+            job_input_data = json.loads(msg.data)  # JSON string to dict
+            for job in job_input_data:
+                if job['machine'] == 'hydraulic_press' and job['depending_on'] is None:
+                    self.get_logger().info(
+                                            f"\nReceived task: '{job['job_ID']}, to produce {job['produce_amount']}"
+                                        )
+                    self.job_queue.append(job)
+        except json.JSONDecodeError as e:
+                self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    #--------------------
-    # Callback for Control CMD
-    def listener_callback_control_cmd(self, msg: String):
+    # TODO: Implement actual processing logic here
+    def listener_maintenance_queue_callback(self, msg: String):
         """
-        Callback function for Control CMD subscription.
-        Processes control commands for corrective/preventative actions.
+        Callback function for Maintenance Queue subscription.
         """
-        self.get_logger().info(f"Received Control Command: {msg.data}")
-        
+        self.get_logger().info(f"Received Maintenance Queue message: {msg.data}")
+
+    
+
+
 
 
 
 def main(args=None):
     """
-    Main entry point for the machine_hydraulic_press_sensor_node.
+    Main entry point for the Machine Hydraulic Press node.
     """
     rclpy.init(args=args)
-    node = Machine_Hydraulic_Press_Sensor_Node()
+    node = Machine_Hydraulic_Press_Node()
     rclpy.spin(node)
     rclpy.shutdown()
 

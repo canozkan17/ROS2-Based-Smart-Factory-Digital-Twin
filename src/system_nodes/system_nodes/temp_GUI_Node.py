@@ -72,7 +72,7 @@ class temp_GUI_Node(Node):
                                 "material": "type of material (e.g., st37, aluminium)",
                                 "part_thickness_mm": number,
                                 "part_weight_kg":  number,
-                                "process_type": ["bending", "forming", "drilling", "grooving", "pocketing", "assembling", "quality_control"],
+                                "process_order": ["bending", "forming", "drilling", "grooving", "pocketing", "assembling", "quality_control"],
                                 "surface_quality_mm": number,
                                 "tolerance_mm": number
                         }}'''
@@ -133,13 +133,9 @@ class temp_GUI_Node(Node):
                 
                 try:
                     job_order_data = json.loads(job_order_input)
-                    job_name_input = job_order_data["job_name"]
                     
-                    # check if the entered job already exists
-                    if self.job_entry_check(job_name_input):
-                        print(f"\nERROR: Job name '{job_name_input}' already exists as a job order. Please enter a unique job name.")
-                        input("\nPress Enter to try again...")
-                        continue
+                    # check if the entered job is correctly formed
+                    self.job_entry_check(job_order_data)                    
 
                     # Get user input for production amount
                     produce_amount = int(input("Enter the production amount:             "))
@@ -167,14 +163,90 @@ class temp_GUI_Node(Node):
                 except Exception as e:
                     print("\nERROR: Invalid JSON input:", e)
                     e = input("press 'e' to exit, press any other key to try again: ")
+                    
                     if e.lower() == 'e':
                         exit(1)
             
-    def job_entry_check(self, job_name_input):
-            for job in self.data:
-                if job['job_name'] == job_name_input:
-                    return True
-            return False
+    def job_entry_check(self, job_order_data):
+            while True:
+                for job in self.data:
+                    # checking for duplicate job name
+                    if job['job_name'] == job_order_data['job_name']:
+                        a = input(f"\nERROR: Job name '{job_order_data['job_name']}' already exists as a job order. Please enter a unique job name:  ")
+                        if a and all(a != job['job_name'] for job in self.data):
+                            job['job_name'] = a
+                        else:
+                            print("please enter a valid job name.")
+                            continue
+
+                    # or duplicate job ID
+                    if job['job_ID'] == job_order_data['job_ID'] or job_order_data['job_ID'] == None or job_order_data['job_ID'] == "":
+                        a = input(f"\nERROR: Job ID '{job_order_data['job_ID']}'. Please enter a unique Job ID:  ")
+                        if a and all(a != job['job_ID'] for job in self.data):
+                            job['job_ID'] = a
+                        else:
+                            print("please enter a valid Job ID.")
+                            continue    
+                # DELETE
+                if job_order_data['job_ID'] == None or job_order_data['job_ID'] == "":
+                    a = input(f"\nERROR: Job ID is missing for job '{job_order_data['job_name']}'. Please enter a valid Job ID:  ")
+                    if a != None and a != "":
+                        job_order_data['job_ID'] = a
+                    else:
+                        print("please enter a valid Job ID.")
+                        continue
+
+                # cheking for missing material
+                if job_order_data['material'] == None or job_order_data['material'] == "":
+                    a = input(f"\nERROR: Material is missing for the '{job_order_data['job_name']}'. Please enter a valid material:  ")
+                    if a != None and a != "":
+                        job_order_data['material'] = a
+                    else:
+                        print("please enter a valid material.")
+                        continue
+
+                # cheking for missing part thickness
+                if job_order_data['part_thickness_mm'] == None or job_order_data['part_thickness_mm'] == "":
+                    a = input(f"\nERROR: Part thickness is missing for the '{job_order_data['job_name']}'. Please enter a valid part thickness in mm:  ")
+                    if a != None and a != "" and a.isdigit():
+                        job_order_data['part_thickness_mm'] = a
+                    else:
+                        print("please enter a valid part thickness in mm.")
+                        continue
+                # cheking for missing part weight
+                if job_order_data['part_weight_kg'] == None or job_order_data['part_weight_kg'] == "":
+                    a = input(f"\nERROR: Part weight is missing for the '{job_order_data['job_name']}'. Please enter a valid part weight in kg:  ")
+                    if a != None and a != "" and a.isdigit():
+                        job_order_data['part_weight_kg'] = a
+                    else:
+                        print("please enter a valid part weight in kg.")
+                        continue
+                # cheking for missing process type
+                if job_order_data['process_order'] == None or job_order_data['process_order'] == "":
+                    a = input(f"\nERROR: Process type is missing for the '{job_order_data['job_name']}'. Please enter at least one process type in brackets [], separated by commas, with quotes e.g., [\"bending\", \"drilling\"]:  ")
+                    if a != None and a != "":
+                        job_order_data['process_order'] = a
+                    else:
+                        print("please enter at least one process type.")
+                        continue
+                # cheking for missing surface quality and tolerance
+                if job_order_data['surface_quality_mm'] == None or job_order_data['tolerance_mm'] == None:
+                    a = input("\nNote: No surface quality and tolerance detected, these will be set to 0 if not critical for the job. Please enter surface quality in and tolerance in mm with comma separated values, or press Enter to set them to 0: ")
+                    if a == None or a == "":
+                        job_order_data['surface_quality_mm'] = 0
+                        job_order_data['tolerance_mm'] = 0
+                    else:
+                        try:
+                            surface_quality, tolerance = map(float, a.split(','))
+                            job_order_data['surface_quality_mm'] = surface_quality
+                            job_order_data['tolerance_mm'] = tolerance
+                        except ValueError:
+                            print("Invalid input. Please enter two numeric values separated by a comma.")
+                            continue
+                # final check complete
+                if job_order_data['job_name'] != None and job_order_data['job_name'] != "" and job_order_data['job_ID'] != None and job_order_data['job_ID'] != "" and job_order_data['material'] != None and job_order_data['material'] != "" and job_order_data['part_thickness_mm'] != None and job_order_data['part_thickness_mm'] != "" and job_order_data['part_weight_kg'] != None and job_order_data['part_weight_kg'] != "" and job_order_data['process_order'] != None and job_order_data['process_order'] != "":
+                    return
+            
         
     def get_job_order(self):
             try:
