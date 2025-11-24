@@ -66,16 +66,17 @@ class temp_GUI_Node(Node):
         self.data = []
         self.target_job = None
         self.example_json = '''{{
-                                "job_name": "New Job Name",
-                                "job_ID": "3-4 letter code",
-                                "part_type": "metal_sheet / other ",
-                                "material": "type of material (e.g., st37, aluminium)",
-                                "part_thickness_mm": number,
-                                "part_weight_kg":  number,
-                                "process_order": ["bending", "forming", "drilling", "grooving", "pocketing", "assembling", "quality_control"],
-                                "surface_quality_mm": number,
-                                "tolerance_mm": number
-                        }}'''
+                                    "job_name": "New Job Name",
+                                    "job_ID": "3-4 letter code",
+                                    "part_type": "metal_sheet / other ",
+                                    "material": "type of material (e.g., st37, aluminium)",
+                                    "part_thickness_mm": number,
+                                    "part_width_mm": number,
+                                    "part_weight_kg":  number,
+                                    "process_order": ["bending", "forming", "drilling", "grooving", "pocketing", "assembling", "quality_control"],
+                                    "surface_quality_mm": number,
+                                    "tolerance_mm": number
+                            }}'''
         
         print("\n == Welcome to the Job Scheduler! ==\n")
         self.order_collect_main()
@@ -187,14 +188,6 @@ class temp_GUI_Node(Node):
                         else:
                             print("please enter a valid Job ID.")
                             continue    
-                # DELETE
-                if job_order_data['job_ID'] == None or job_order_data['job_ID'] == "":
-                    a = input(f"\nERROR: Job ID is missing for job '{job_order_data['job_name']}'. Please enter a valid Job ID:  ")
-                    if a != None and a != "":
-                        job_order_data['job_ID'] = a
-                    else:
-                        print("please enter a valid Job ID.")
-                        continue
 
                 # cheking for missing material
                 if job_order_data['material'] == None or job_order_data['material'] == "":
@@ -212,6 +205,14 @@ class temp_GUI_Node(Node):
                         job_order_data['part_thickness_mm'] = a
                     else:
                         print("please enter a valid part thickness in mm.")
+                        continue
+                # Cheking for missing part width
+                if job_order_data['part_width_mm'] == None or job_order_data['part_width_mm'] == "":
+                    a = input(f"\nERROR: Part width is missing for the '{job_order_data['job_name']}'. Please enter a valid part width in mm:  ")
+                    if a != None and a != "" and a.isdigit():
+                        job_order_data['part_width_mm'] = a
+                    else:
+                        print("please enter a valid part width in mm.")
                         continue
                 # cheking for missing part weight
                 if job_order_data['part_weight_kg'] == None or job_order_data['part_weight_kg'] == "":

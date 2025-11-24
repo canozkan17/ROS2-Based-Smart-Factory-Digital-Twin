@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-ROS2 Node for generating synthetic sensor data for Process Pump Machine.
+ROS2 Node for generating job orders to the production system.
 
 
 Subscribes to User_Input topic for job order input.
@@ -57,6 +57,7 @@ class Job_Scheduler_Node(Node):
         self.running_operations = {} # key: machine_id, value: task
         self.pending_operations = []
         self.completed_operations = set()
+        self.completed_jobs = set()
     
         # Control flags
         self.process_finished = False
@@ -84,14 +85,14 @@ class Job_Scheduler_Node(Node):
         """
         
         machine_process_map = {
-                        "bending": "hydraulic_press",
-                        "forming": "hydraulic_press",
-                        "drilling": "cnc",
-                        "grooving": "cnc",
-                        "pocketing": "cnc",
-                        "assembling": "robot_arm",
-                        "quality_control": "robot_arm"
-                    }
+                                "bending": "hydraulic_press",
+                                "forming": "hydraulic_press",
+                                "drilling": "cnc",
+                                "grooving": "cnc",
+                                "pocketing": "cnc",
+                                "assembling": "robot_arm",
+                                "quality_control": "robot_arm"
+                            }
         
         if process_name in machine_process_map:
             return machine_process_map[process_name]
@@ -151,30 +152,30 @@ class Job_Scheduler_Node(Node):
         
     def add_new_job(self, user_input_data: Dict[str, Any]):
         # Generate unique job ID
-
         user_input_data = self.generate_job_ID(user_input_data)
         # Extract first process and remaining processes
         for i in range(len(user_input_data['process_order'])):  
             firs_process = user_input_data['process_order'][i]
             
-
             # Define task
             task = {
-                "task_ID": user_input_data['job_ID'] + "_" + firs_process,
-                "job_ID": user_input_data['job_ID'],
-                "priority": user_input_data['priority'],
-                "process": firs_process,
-                "machine": self.select_machine_for_process(firs_process),
-                "depending_on": None if i == 0 else user_input_data['process_order'][i-1],  # None for first process, else previous process
-                "task_time": self.task_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material']),
-                "part_weight_kg": user_input_data['part_weight_kg'],
-                "part_thickness_mm": user_input_data['part_thickness_mm'],
-                "surface_quality_mm": user_input_data["surface_quality_mm"],
-                "tolerance_mm": user_input_data["tolerance_mm"],
-                "produce_amount": user_input_data["produce_amount"],
-                "produce_amount": user_input_data["produce_amount"],
-                "material": user_input_data["material"],
-            }
+                        "task_ID": user_input_data['job_ID'] + "_" + firs_process + f"_{str(i+1).zfill(2)}",
+                        "job_ID": user_input_data['job_ID'],
+                        "priority": user_input_data['priority'],
+                        "process": firs_process,
+                        "machine": self.select_machine_for_process(firs_process),
+                        "depending_on": None if i == 0 else self.pending_operations[-1]['task_ID'],  # None for first process, else previous process task_ID
+                        "task_time": self.task_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material']),
+                        "part_weight_kg": user_input_data['part_weight_kg'],
+                        "part_thickness_mm": user_input_data['part_thickness_mm'],
+                        "part_width_mm": user_input_data['part_width_mm'],
+                        "surface_quality_mm": user_input_data["surface_quality_mm"],
+                        "tolerance_mm": user_input_data["tolerance_mm"],
+                        "produce_amount": user_input_data["produce_amount"],
+                        "produce_amount": user_input_data["produce_amount"],
+                        "material": user_input_data["material"],
+                        "status": "PENDING"
+                    }
             # Add job to job order list
             self.pending_operations.append(task)
         self.job_order.append(user_input_data)
@@ -232,12 +233,13 @@ class Job_Scheduler_Node(Node):
         Processes control commands for corrective/preventative actions.
         """
 
-        # listen for process_finished signal & job_ID number
+        # listen for process_finished signal & completed task data 
         completed_data = json.loads(msg.data)
-        self.get_logger().info(f"Received Completed item: {msg.data}")
-        self.completed_task = completed_data
-        self.process_finished = True
-        self.schedule_conducter()
+        if completed_data['status'] == 'COMPLETED':
+            self.get_logger().info(f"Received Completed item: {msg.data}")
+            self.completed_task = completed_data
+            self.process_finished = True
+            self.schedule_conducter()
     
     #--------------------
 
@@ -275,29 +277,36 @@ class Job_Scheduler_Node(Node):
             self.user_input_received = False
         
         
-        # following the completion of process
+        # following the COMPLETION of process
         if self.process_finished:
-            for task in self.pending_operations:
-                if task['depending_on'] == self.completed_task['process']:
-                    task['depending_on'] = None  # Mark dependency as resolved 
+            completed_task_ID = self.completed_task['task_ID']
+            for pending_op in self.pending_operations[:]:
+                if pending_op['depending_on'] == completed_task_ID:
+                    pending_op['depending_on'] = None  # Mark dependency as resolved 
             # add the completed task to completed operations
             self.completed_operations.add(self.completed_task['task_ID'])
+            self.process_finished = False # Reset process finished flag 
 
             # remove the completed task from running operations
             machine_id = self.completed_task['machine']
             if self.completed_task['task_ID'] == self.running_operations[machine_id]['task_ID']:
                 del self.running_operations[machine_id]
             
-            self.process_finished = False                # Reset process finished flag
             ready_tasks = self.load_balancer()           # Rebalance jobs according to the new/remaining tasks
-            self.publish_job_orders(ready_tasks)         # Publish the next job orders
+            if ready_tasks:
+                self.publish_job_orders(ready_tasks)     # publish new ready tasks
+                # remove the published task from pending operations and add to running operations
+                for task in ready_tasks:
+                    self.pending_operations.remove(task)
+                    self.running_operations[task['machine']] = task
             
-            # check for job completion
-            for task in self.pending_operations:
-                if self.completed_task['job_ID'] != task['job_ID']:
-                    self.job_order.pop(0)           # Remove the published job order
-    
-    
+            # check for job completion    
+            for order in self.job_order[:]:  
+                job_tasks = [t for t in self.pending_operations + list(self.running_operations.values()) 
+                            if t['job_ID'] == order['job_ID']]
+                if not job_tasks:  # no task = job completed
+                    self.job_order.remove(order)
+                    self.get_logger().info(f"Job {order['job_ID']} fully COMPLETED and removed.")
 
     # Load Balancer Function
     # TODO: Expand in maintenance queue callback

@@ -4,10 +4,11 @@
         "job_ID": "SMPC",
         "part_type": "metal_sheet",
         "material": "DC01_ZE",
-        "process_order": ["forming","drilling", "assembling"],
+        "process_order": ["forming","drilling","forming","assembling"],
         "priority": "medium",
         "part_weight_kg": 2.3,
         "part_thickness_mm": 1.5,
+        "part_width_mm": 1500,
         "surface_quality_mm": 0.4,
         "tolerance_mm": 0.2
     },
@@ -20,6 +21,7 @@
         "priority": "high",
         "part_weight_kg": 3.1,
         "part_thickness_mm": 2.0,
+        "part_width_mm": 1500,
         "surface_quality_mm": 0.3,
         "tolerance_mm": 0.15
     },
@@ -28,10 +30,11 @@
         "job_ID": "ALB",
         "part_type": "metal_sheet",
         "material": "Aluminium_6082_T6",
-        "process_order": ["forming", "pocketing","drilling", "quality_control", "assembling"],
+        "process_order": ["drilling", "quality_control", "assembling"],
         "priority": "high",
         "part_weight_kg": 5.8,
         "part_thickness_mm": 10.0,
+        "part_width_mm": 1500,
         "surface_quality_mm": 0.5,
         "tolerance_mm": 0.1
     }
