@@ -30,7 +30,7 @@
         "job_ID": "ALB",
         "part_type": "metal_sheet",
         "material": "Aluminium_6082_T6",
-        "process_order": ["drilling", "quality_control", "assembling"],
+        "process_order": ["forming", "pocketing","drilling", "quality_control", "assembling"],
         "priority": "high",
         "part_weight_kg": 5.8,
         "part_thickness_mm": 10.0,

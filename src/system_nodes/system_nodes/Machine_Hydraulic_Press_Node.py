@@ -14,9 +14,7 @@ import threading
 import random
 import rclpy
 import json
-import time
 import math
-import os
 
 
 class Machine_Hydraulic_Press_Node(Node):
@@ -29,15 +27,19 @@ class Machine_Hydraulic_Press_Node(Node):
         self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD', self.listener_control_cmd_callback, 10)
               
         # Publisher for Sensors data
-        self.publisher_sensors = self.create_publisher(String, "Sensors", 10)
+        self.publisher_sensors = self.create_publisher(String, "Sensors/hydraulic_press", 10)
         # Publisher for Completed status
         self.publisher_completed = self.create_publisher(String, "Completed", 10)
         
         # Variable set-up
         self.current_task = {}
-        self.cycle_index = 0
+        self.total_ran_cycles = 0
         self.total_production = 0
         self.total_time_producing = 0.0
+
+        # random lifetime (2000-2205 cycles, based on UCI dataset 2205 instances)
+        self.max_lifetime = random.randint(2000, 2205)  # in cycles
+        self.get_logger().info(f"Hydraulic Press initialized with max lifetime: {self.max_lifetime} cycles (ground truth, hidden)")
 
         # Simulation and production control flags
         # Set "REALTIME" for 60s per cycle, "FAST" for max speed
@@ -226,16 +228,18 @@ class Machine_Hydraulic_Press_Node(Node):
         production_rate_per_hour = (self.total_production / self.total_time_producing) * 3600.0
         return production_rate_per_hour
 
-    def _get_degradation_state(self):
+    def _get_degradation_state(self, current_rul: float, max_rul: float) -> dict:
         """Return dataset-like health parameters for the current cycle."""
-        idx = self.cycle_index
+        degradation_ratio = max(0.0,1.0 - (current_rul / max_rul)) # clamp 0-1
+
+        idx = self.total_ran_cycles
         state = {
-                    "health": 1.0,
-                    "cooler_eff": 100,
-                    "valve_cond": 100,
-                    "pump_leak": 0.0,
-                    "acc_pressure": 130,
-                    "internal_leak": 0.0
+                    "health": 1.0 - degradation_ratio * 0.95,  # Overall health drops to ~0.05 at end
+                    "cooler_eff": max(40, 100 - 60 * degradation_ratio),  # Cooler fails first (profile 1)
+                    "valve_cond": max(73, 100 - 27 * degradation_ratio),  # Valve mid-degradation (profile 2)
+                    "pump_leak": min(3.0, degradation_ratio * 3.0),  # Pump leak ramps up (profile 3)
+                    "acc_pressure": max(90, 130 - 40 * degradation_ratio),  # Accumulator drops last (profile 4)
+                    "internal_leak": min(1.0, degradation_ratio * 1.0)  # Leak increases steadily
                 }
 
         if idx < 1800:
@@ -291,8 +295,11 @@ class Machine_Hydraulic_Press_Node(Node):
 
     def generate_sensor_data(self):
         """Create UCI-compatible raw signals for one 60 s cycle."""
+        current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+
+
         lengths = {"100hz": 6000, "10hz": 600, "1hz": 60}
-        state = self._get_degradation_state()
+        state = self._get_degradation_state(current_rul, self.max_lifetime)
         tonnage = self.calculate_tonnage()
         load_factor = min(2.5, tonnage / 40.0)
         t100 = _np.linspace(0, 60, lengths["100hz"])
@@ -356,10 +363,13 @@ class Machine_Hydraulic_Press_Node(Node):
             ).tolist()
 
         flags = self._flags_from_state(state)
-        self.cycle_index += 1
+        self.total_ran_cycles += 1
+
+        if current_rul <= 0:
+            self.get_logger().warn(f"Hydraulic Press has reached end of life at cycle {self.total_ran_cycles - 1}!")
 
         return {
-                    "cycle": self.cycle_index - 1,
+                    "cycle": self.total_ran_cycles - 1,
                     "load_factor": round(float(load_factor), 3),
                     "tonnage_est": round(float(tonnage), 2),
                     "PS1": ps_data["PS1"],
@@ -390,7 +400,7 @@ class Machine_Hydraulic_Press_Node(Node):
         sensor_msg = String()
         sensor_msg.data = json.dumps(sensor_data)
         self.publisher_sensors.publish(sensor_msg)
-        self.get_logger().info(f"Published sensor data for cycle {self.cycle_index - 1}.")
+        self.get_logger().info(f"Published sensor data for cycle {self.total_ran_cycles - 1}.")
 
     def publish_completed_status(self):
         """
@@ -407,6 +417,16 @@ class Machine_Hydraulic_Press_Node(Node):
         Callback for the rclpy.Timer (REALTIME mode).
         Runs one production cycle every 60 seconds.
         """
+        current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+        if current_rul <= 0:
+            self.get_logger().error(f"Machine failure! RUL=0, stopping task {self.current_task.get('job_ID', 'unknown')}.")
+            self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
+            #TODO: Publish failure status in due time at this line. 
+            if self.production_timer:
+                self.production_timer.cancel()
+                self.production_timer = None
+            return
+
         # Check if task is completed
         if self.cycles_done >= self.cycles_to_run:
             self.get_logger().info(f"Task {self.current_task.get('job_ID')} completed in REALTIME mode.")
@@ -423,7 +443,7 @@ class Machine_Hydraulic_Press_Node(Node):
 
         # If not completed, run one cycle
         self.get_logger().info(f"Running cycle {self.cycles_done + 1}/{self.cycles_to_run} (Realtime)...")
-        self.publish_generated_data()                                                                        # This publishes data and increments self.cycle_index
+        self.publish_generated_data()
         self.cycles_done += 1
 
     def run_fast_simulation(self):
@@ -435,13 +455,16 @@ class Machine_Hydraulic_Press_Node(Node):
         try:
             for i in range(self.cycles_to_run):
                 # In FAST mode, just loop and publish
+                current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+                if current_rul <= 0:
+                    self.get_logger().error(f"Machine failure during FAST sim! RUL=0 at cycle {self.total_ran_cycles}.")
+                    self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
+                    #TODO: Publish failure status in due time at this line. 
+                    break
+                
                 self.publish_generated_data()
                 self.cycles_done += 1
-                
-                # Log progress periodically to avoid spamming the console
-                if (self.cycles_done % 50 == 0) or (self.cycles_done == self.cycles_to_run):
-                     self.get_logger().info(f"FAST sim progress: {self.cycles_done}/{self.cycles_to_run} cycles...")
-        
+                        
         except Exception as e:
             self.get_logger().error(f"Error during FAST simulation: {e}")
         

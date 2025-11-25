@@ -189,9 +189,6 @@ class Job_Scheduler_Node(Node):
         else:
             return True
     
-    # Callback Functions Block
-    #--------------------
-    # Callback for User Input
     def listener_user_input_callback(self, msg: String):
         """
         Callback function for User Input subscription.
@@ -210,8 +207,7 @@ class Job_Scheduler_Node(Node):
             
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
-        
-        
+
     # Callback for maintenance queue                                                            !! REMAINING TODO !!
     def listener_maintenance_queue_callback(self, msg: String):
         """
@@ -241,8 +237,6 @@ class Job_Scheduler_Node(Node):
             self.process_finished = True
             self.schedule_conducter()
     
-    #--------------------
-
     def publish_job_orders(self, ready_tasks=None):
         """
         Publish next order (target job) to the Job_Orders topic.
@@ -256,7 +250,6 @@ class Job_Scheduler_Node(Node):
         self.publisher_job_orders.publish(job_order_msg)
         self.get_logger().info(f"Published Job Orders: {job_order_msg.data}")
  
-    
     def schedule_conducter(self):
         """
         Control job_order and process_order lists.
@@ -327,9 +320,6 @@ class Job_Scheduler_Node(Node):
                         )
         return ready_tasks
         
-        
-
-
 def main(args=None):
     """
     Main entry point for the Job_Scheduler_Node.
