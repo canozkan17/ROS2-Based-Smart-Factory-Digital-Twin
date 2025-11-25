@@ -222,7 +222,7 @@ class Job_Scheduler_Node(Node):
         
         self.publisher_job_orders.publish(job_order)
         self.get_logger().info(f"Published Job Order: {job_order.data}")
-    # Callback for Completed                                                                    !! REMAINING TODO !!
+    # Callback for Completed
     def listener_completed_callback(self, msg: String):
         """
         Callback function for Completed  subscription.
@@ -232,7 +232,7 @@ class Job_Scheduler_Node(Node):
         # listen for process_finished signal & completed task data 
         completed_data = json.loads(msg.data)
         if completed_data['status'] == 'COMPLETED':
-            self.get_logger().info(f"Received Completed item: {msg.data}")
+            self.get_logger().info(f"Received Completed item: {json.dumps(completed_data, indent=2)}")
             self.completed_task = completed_data
             self.process_finished = True
             self.schedule_conducter()
@@ -248,7 +248,7 @@ class Job_Scheduler_Node(Node):
         # Publish the ready task
         job_order_msg.data = json.dumps(ready_tasks if ready_tasks else [])
         self.publisher_job_orders.publish(job_order_msg)
-        self.get_logger().info(f"Published Job Orders: {job_order_msg.data}")
+        self.get_logger().info(f"Published Job Orders:\n{json.dumps(json.loads(job_order_msg.data), indent=2)}")
  
     def schedule_conducter(self):
         """

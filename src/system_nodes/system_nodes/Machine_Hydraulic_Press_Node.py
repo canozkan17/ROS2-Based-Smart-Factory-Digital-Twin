@@ -141,7 +141,7 @@ class Machine_Hydraulic_Press_Node(Node):
                         return
 
                     self.get_logger().info(
-                                                f"\nReceived task: '{task['job_ID']}'. "
+                                                f"\nReceived task: '{json.dumps(task['job_ID'], indent=2)}'. "
                                                 f"Total time: {task_time_seconds}s. "
                                                 f"Calculated cycles: {self.cycles_to_run}"
                                             )
@@ -162,12 +162,12 @@ class Machine_Hydraulic_Press_Node(Node):
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    # TODO: Implement actual processing logic here in due time
+    # TODO: Implement actual processing logic here in due time && check sent data format.
     def listener_control_cmd_callback(self, msg: String):
         """
         Callback function for Control_CMD subscription.
         """
-        self.get_logger().info(f"Received Control_CMD message: {msg.data}")
+        self.get_logger().info(f"Received Control_CMD message: {json.dumps(msg.data, indent=2)}")
 
     def calculate_tonnage(self):
         """

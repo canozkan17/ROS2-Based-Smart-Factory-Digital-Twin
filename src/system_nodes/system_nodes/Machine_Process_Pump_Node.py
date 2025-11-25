@@ -190,7 +190,7 @@ class Machine_Process_Pump_Sensor_Node(Node):
                         return
 
                     self.get_logger().info(
-                                                f"\nReceived task: '{task['job_ID']}'. "
+                                                f"\nReceived task: '{json.dumps(task['job_ID'], indent=2)}'. "
                                                 f"Total time: {task_time_seconds}s. "
                                                 f"Calculated cycles: {self.cycles_to_run}"
                                             )
@@ -218,7 +218,7 @@ class Machine_Process_Pump_Sensor_Node(Node):
         Callback function for Control CMD subscription.
         Processes control commands for corrective/preventative actions.
         """
-        self.get_logger().info(f"Received Control Command: {msg.data}")
+        self.get_logger().info(f"Received Control Command: {json.dumps(msg.data, indent=2)}")#TODO: Implement control cmd in due time.&& check sent data format.
 
     def calculate_tonnage(self):
         """
