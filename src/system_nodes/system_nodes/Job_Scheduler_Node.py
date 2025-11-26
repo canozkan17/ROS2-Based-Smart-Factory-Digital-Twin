@@ -44,11 +44,6 @@ class Job_Scheduler_Node(Node):
         # Publisher for Production Log status
         self.publisher_production_log = self.create_publisher(String, "Production_Log", 10)
         
-        # Set-up logs
-        self.get_logger().info("Job Scheduler node ready!")
-        self.get_logger().info("Listening on 'User_Input' topic.")
-        self.get_logger().info("Listening on 'Maintenance_Queue' topic.")
-        self.get_logger().info("Listening on 'Completed' topic.")
 
         # Job setup
         self.job_order = []
@@ -62,6 +57,12 @@ class Job_Scheduler_Node(Node):
         # Control flags
         self.process_finished = False
         self.user_input_received = False
+        
+        # Set-up logs
+        self.get_logger().info("Job Scheduler node ready!")
+        self.get_logger().info("Listening on 'User_Input' topic.")
+        self.get_logger().info("Listening on 'Maintenance_Queue' topic.")
+        self.get_logger().info("Listening on 'Completed' topic.")
 
     def generate_job_ID(self, user_input_data) -> Dict[str, Any]:
         """
@@ -256,7 +257,7 @@ class Job_Scheduler_Node(Node):
         Conduct publishing of job orders based on completion status.
         """
 
-        # !! TODO : will be updated according to job order reschedule logic + Completed message!!
+        # !! TODO : will be updated according to maintenance queue logic in due time!!
         
         
         if self.user_input_received:

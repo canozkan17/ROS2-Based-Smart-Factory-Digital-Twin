@@ -27,6 +27,7 @@ setup(
             'process_pump_sensor = system_nodes.Machine_Process_Pump_Node:main',
             'job_scheduler = system_nodes.Job_Scheduler_Node:main',
             'temp_gui = system_nodes.temp_GUI_Node:main',
+            'predictor = system_nodes.Predictor_Node:main',
         ],
     },
 )

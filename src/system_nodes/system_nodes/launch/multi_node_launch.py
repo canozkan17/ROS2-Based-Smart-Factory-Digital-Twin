@@ -20,5 +20,11 @@ def generate_launch_description():
                 package='system_nodes',
                 executable='job_scheduler',
                 name='job_scheduler_node'
+            ),
+
+        Node(
+                package='system_nodes',
+                executable='predictor',
+                name='predictor_node'
             )
     ])

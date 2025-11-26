@@ -370,6 +370,7 @@ class Machine_Hydraulic_Press_Node(Node):
 
         return {
                     "cycle": self.total_ran_cycles - 1,
+                    "num_cycles": self.cycles_to_run,
                     "load_factor": round(float(load_factor), 3),
                     "tonnage_est": round(float(tonnage), 2),
                     "PS1": ps_data["PS1"],
