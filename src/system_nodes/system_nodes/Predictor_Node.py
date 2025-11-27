@@ -7,34 +7,38 @@ Subscribes to Sensors topic for raw data input.
 
 1- Loads scaler and model to memory on initialization. 
 2- Gets the raw data input from Sensors/machine as JSON file.
-3- Preprocesses the raw data using training scaler and feature extraction.
+3- Preprocesses the raw data using training scaler and/or feature extraction.
 4- Generates RUL predictions
 5- Publishes RUL predictions to Predictions/machine Topic.
 
 Publishes selected job order to Predictions Topic. 
 """
 
+from rclpy.executors import MultiThreadedExecutor
 from scipy.stats import kurtosis
 from std_msgs.msg import String
 from scipy.stats import skew
 from rclpy.node import Node
-from tqdm import tqdm
+
+import warnings
 import xgboost as xgb
 import pandas as pd
 import numpy as np
 import rclpy
 import joblib
 import json
-import time
 import os
 
+# does not use dataframe for RPI performance reasons - ignored specific warning
+warnings.filterwarnings("ignore", message="X does not have valid feature names, but StandardScaler was fitted with feature names") 
+
 class Predictor_Node(Node):
-    """ROS2 Node for generating job orders to the production system."""
 
     def __init__(self):
         """
-        Initialize the Job Scheduler node, set up subscriptions and publishers.
-        Get user input for job scheduling.
+        Initialize the Predictor node, set up subscriptions and publishers.
+        Get models and scalers from disk into memory.
+        set up variables/constants and flags.
         """
         super().__init__('Predictor_Node')
         
@@ -63,6 +67,10 @@ class Predictor_Node(Node):
         # Hydraulic variables
         self.hydraulic_history = []
 
+        # Process Pump variables
+        self.pump_history = [] # for last 5 cycles - each 60 seconds
+        self.max_pump_history_length = 5
+
         # Defaults
         self.hydraulic_sensors = [
                                     'PS1', 'PS2', 'PS3', 'PS4', 'PS5', 'PS6',      # 100 Hz
@@ -74,14 +82,39 @@ class Predictor_Node(Node):
                                     'CP',                                          # 1 Hz (virtual)
                                     'SE'                                           # 1 Hz (virtual)
                                 ]
+        # the direct sensors used in 35 features for Process_Pump 
+        self.process_pump_direct_sensors = [
+                                                'sensor_02', 'sensor_01', 'sensor_03', 'sensor_36', 'sensor_49',
+                                                'sensor_42', 'sensor_26', 'sensor_00', 'sensor_13', 'sensor_28',
+                                                'sensor_29', 'sensor_45', 'sensor_34'
+                                            ] # 13
+        # the rolling sensors used in 35 features for Process_Pump - total makes the 35 features the model expects
+        self.roll_sensors = [
+                                'sensor_02', 'sensor_03', 'sensor_01', 'sensor_36', 'sensor_26',
+                                'sensor_28', 'sensor_29', 'sensor_00', 'sensor_13', 'sensor_32',
+                                'sensor_23', 'sensor_34', 'sensor_25', 'sensor_07', 'sensor_35',
+                                'sensor_06', 'sensor_49', 'sensor_30', 'sensor_22', 'sensor_14',
+                                'sensor_42', 'sensor_33'
+                            ]   # 22
+        # ordered features for Process_Pump model input 
+        self.ordered_features = [
+                                    'sensor_02_roll_mean', 'sensor_03', 'sensor_02', 'sensor_01_roll_mean', 'sensor_01',
+                                    'sensor_03_roll_mean', 'sensor_36_roll_mean', 'sensor_26_roll_mean', 'sensor_28_roll_mean',
+                                    'sensor_29_roll_mean', 'sensor_36', 'sensor_00_roll_mean', 'sensor_13_roll_mean',
+                                    'sensor_49', 'sensor_42', 'sensor_32_roll_mean', 'sensor_26', 'sensor_23_roll_mean',
+                                    'sensor_34_roll_mean', 'sensor_42_roll_mean', 'sensor_00', 'sensor_13', 'sensor_28',
+                                    'sensor_25_roll_mean', 'sensor_29', 'sensor_07_roll_mean', 'sensor_35_roll_mean',
+                                    'sensor_06_roll_mean', 'sensor_49_roll_mean', 'sensor_30_roll_mean', 'sensor_22_roll_mean',
+                                    'sensor_14_roll_mean', 'sensor_45', 'sensor_33_roll_mean', 'sensor_34'
+                                ] # 35
 
         # Control flags
         self.process_finished = False
         self.user_input_received = False
         
         # Set-up logs
-        self.get_logger().info("Job Scheduler node ready!")
-        self.get_logger().info("Listening on 'Sensors/' topic. for 2 machine sensors")
+        self.get_logger().info("Predictor node ready!")
+        self.get_logger().info("Listening on 'Sensors/ ' topic. For 2 machine sensors")
 
     # HYDRAULIC PRESS MACHINE METHODS    
     def load_hydraulic_press_model(self):
@@ -96,6 +129,43 @@ class Predictor_Node(Node):
         self.hydraulic_press_scaler = joblib.load(scaler)
         self.get_logger().info("Hydraulic_Press model and scaler loaded.")
 
+    def listener_hydraulic_press_callback(self, msg: String):
+        """
+        Callback function for Hydraulic_Press subscription.
+        """
+        try: 
+            received_data = json.loads(msg.data)
+            self.received_raw_data = received_data
+            self.machine = "hydraulic_press"
+            self.get_logger().info(f"Received Hydraulic_Press message")
+            
+            # update history and keep only last 6 entries
+            self.hydraulic_history.append(self.received_raw_data)
+            if len(self.hydraulic_history) > 6:
+                self.hydraulic_history.pop(0) 
+
+            self.hydraulic_press_generate_predictions()
+
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"User Input JSON parse error: {e}")
+
+    def hydraulic_press_generate_predictions(self):
+        """
+        Extract features and generate RUL predictions for Hydraulic_Press machine.
+        """
+        X = self.hydraulic_press_feature_extractor()
+        if X is None or X.shape != (1, 153):
+            self.get_logger().warning("No features extracted, skipping prediction.")
+            return None
+        try:
+            X_scaled = self.hydraulic_press_scaler.transform(X)
+            rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
+            self.publish_generated_data(rul)
+            self.hydraulic_last_predicted_cycle = self.received_raw_data['cycle']
+        except Exception as e:
+            self.get_logger().error(f"Prediction error: {e}")
+            return None
+    # Helper
     def hydraulic_press_feature_extractor(self):
         """
         Feature extraction for Hydraulic_Press machine sensor data.
@@ -127,8 +197,10 @@ class Predictor_Node(Node):
             self.get_logger().error(f"Feature count mismatch! Expected 153, got {len(features)}")
             return None
 
-        return np.array(features).reshape(1, -1)  # (1, 153)
-    
+        X = np.array(features).reshape(1, -1)
+        X = pd.DataFrame([features], columns=feature_names)  
+        return X.values
+    # Helper
     def hydraulic_press_extract_features_with_trend(self, arr_list, window_size=5):
         """
         Extract statistical and temporal trend features.
@@ -155,47 +227,9 @@ class Predictor_Node(Node):
 
             feats_all.append([mean_, std_, min_, max_, rms_, skew_, kurt_, ptp_, trend])
         return np.array(feats_all)
-    
-    def listener_hydraulic_press_callback(self, msg: String):
-        """
-        Callback function for Hydraulic_Press subscription.
-        """
-        try: 
-            received_data = json.loads(msg.data)
-            self.received_raw_data = received_data
-            self.machine = "hydraulic_press"
-            # update history and keep only last 6 entries
-            self.hydraulic_history.append(self.received_raw_data)
-            if len(self.hydraulic_history) > 6:
-                self.hydraulic_history.pop(0) 
-
-
-            self.hydraulic_press_generate_predictions()
-        except json.JSONDecodeError as e:
-            self.get_logger().error(f"User Input JSON parse error: {e}")
-        
-    def hydraulic_press_generate_predictions(self):
-        """
-        Extract features and generate RUL predictions for Hydraulic_Press machine.
-        """
-                
-        
-        
-        X = self.hydraulic_press_feature_extractor()
-        if X is None or X.shape != (1, 153):
-            self.get_logger().warning("No features extracted, skipping prediction.")
-            return None
-        try:
-            X_scaled = self.hydraulic_press_scaler.transform(X)
-            rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
-            self.publish_generated_data(rul)
-            self.hydraulic_last_predicted_cycle = self.received_raw_data['cycle']
-        except Exception as e:
-            self.get_logger().error(f"Prediction error: {e}")
-            return None
     # ----------------------------------------------------------------
 
-    # Done - Leave Alone
+    # PROCESS PUMP MACHINE METHODS
     def load_process_pump_model(self):
         """
         Loads the pre-trained model and scaler for Process_Pump machine.
@@ -207,21 +241,77 @@ class Predictor_Node(Node):
         scaler= os.path.join(self.root_path, 'pump_sensor_rul_hrs_data', 'scaler_pump_top35_features.pkl')
         self.process_pump_scaler = joblib.load(scaler)
         self.get_logger().info("Process_Pump model and scaler loaded.")
-
-    # TODO: PENDING
+    
     def listener_process_pump_callback(self, msg: String):
         """
         Callback function for Process_Pump subscription.
         """
-        self.get_logger().info(f"Received Process_Pump message: {json.dumps(msg.data, indent=2)}")
-        # the whole process is pending implementation
-        self.machine = "process_pump" # place holder to not forget
-    
+        try: 
+            received_data = json.loads(msg.data)
+            self.received_raw_data = received_data
+            self.machine = "process_pump"
+            self.get_logger().info(f"Received Process_Pump message")
 
-    # TODO: PENDING either machine specific or generic - will be decided.
+            # update history and keep only last max_pump_history_length entries
+            self.pump_history.append(self.received_raw_data)
+            if len(self.pump_history) > self.max_pump_history_length:
+                self.pump_history.pop(0)
+            # before the required window is filled, pad with current data
+            while len(self.pump_history) < self.max_pump_history_length:
+                self.pump_history.insert(0, self.received_raw_data)
+            
+            self.process_pump_generate_predictions()
+
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"User Input JSON parse error: {e}")
+    
+    def process_pump_generate_predictions(self):
+        """
+        Generate RUL predictions for Process_Pump machine.
+        """
+        X = self.process_pump_feature_extractor()
+        if X is None or X.shape != (1, 35):
+            self.get_logger().warning("No features extracted, skipping prediction.")
+            return None
+        try:
+            X_scaled = self.process_pump_scaler.transform(X)
+            rul_hrs = float(self.process_pump_model.predict(X_scaled)[0])
+            rul = round(rul_hrs * 60)  # hours -> cycles (since 1 cycle = 60 seconds)
+        except Exception as e:
+            self.get_logger().error(f"Prediction error: {e}")
+            return None
+        
+        self.publish_generated_data(rul)
+    # Helper
+    def process_pump_feature_extractor(self):
+        """
+        Feature extraction for Process_Pump machine sensor data.
+        """
+        history = self.pump_history.copy()
+        features = {}
+
+        # Direct sensor features
+        for sensor in self.process_pump_direct_sensors:
+            sensor_values = [cycle_data.get(sensor, 0.0) for cycle_data in history]
+            features[sensor] = sensor_values[-1]  # last value
+        
+        # Rolling sensor features
+        for sensor in self.roll_sensors:
+            sensor_values = [cycle_data.get(sensor, 0.0) for cycle_data in history]
+            arr = np.array(sensor_values)
+            features[f"{sensor}_roll_mean"] = np.mean(arr)
+            
+        # Arrange features in the expected order
+        X = [features.get(feat, 0.0) for feat in self.ordered_features]
+        return np.array(X).reshape(1, -1)
+    #----------------------------------------------------------------
+
+
     def publish_generated_data(self, rul):
         """
-        Publishes generated sensor data to Sensors topic.
+        Generic publisher for RUL predictions.
+        Selects the correct publisher based on machine type.
+        
         """
         cycle = self.received_raw_data.get('cycle', "unknown")
         prediction_msg = String()
@@ -233,14 +323,14 @@ class Predictor_Node(Node):
         self.prediction_publishers[self.machine].publish(prediction_msg)
         self.get_logger().info(f"Published RUL prediction for {self.machine} at cycle {cycle}: RUL={rul}")
 
-
 def main(args=None):
     """
     Main entry point for the Predictor_Node.
     """
     rclpy.init(args=args)
     node = Predictor_Node()
-    rclpy.spin(node)
+    executor = MultiThreadedExecutor(num_threads=4) # Optimized for RPI-4 
+    rclpy.spin(node, executor=executor)
     rclpy.shutdown()
 
 
