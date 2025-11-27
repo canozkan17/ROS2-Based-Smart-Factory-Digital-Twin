@@ -41,13 +41,14 @@ class Predictor_Node(Node):
         # Subscription to machine_hydraulic_press_node  
         self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 10)        
         # Subscription to machine_process_pump_node  
-        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 10)        
-        
-        # Publisher for machine_hydraulic_press_node Predictions
-        self.publisher_hydraulic_press_predictions = self.create_publisher(String, "Predictions/hydraulic_press", 10)
-        # Publisher for machine_process_pump_node Predictions
-        self.publisher_process_pump_predictions = self.create_publisher(String, "Predictions/process_pump", 10)
+        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 10)    
 
+        # Publishers for predictions
+        self.prediction_publishers = {
+                                        "hydraulic_press": self.create_publisher(String, "Predictions/hydraulic_press", 10),
+                                        "process_pump": self.create_publisher(String, "Predictions/process_pump", 10)
+                                    }    
+        
         # Adress setup
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
         self.root_path = os.path.abspath(os.path.join(self.current_dir, "../../.."))
@@ -57,6 +58,7 @@ class Predictor_Node(Node):
 
         # Variable setup
         self.received_raw_data = {}
+        self.machine = str()
         
         # Hydraulic variables
         self.hydraulic_history = []
@@ -80,7 +82,8 @@ class Predictor_Node(Node):
         # Set-up logs
         self.get_logger().info("Job Scheduler node ready!")
         self.get_logger().info("Listening on 'Sensors/' topic. for 2 machine sensors")
-    
+
+    # HYDRAULIC PRESS MACHINE METHODS    
     def load_hydraulic_press_model(self):
         """
         Loads the pre-trained model and scaler for Hydraulic_Press machine.
@@ -93,38 +96,39 @@ class Predictor_Node(Node):
         self.hydraulic_press_scaler = joblib.load(scaler)
         self.get_logger().info("Hydraulic_Press model and scaler loaded.")
 
-    # TODO: INPROCESS 
     def hydraulic_press_feature_extractor(self):
         """
         Feature extraction for Hydraulic_Press machine sensor data.
         """
-        all_features = []
+        features = []
+        full_history = self.hydraulic_history.copy()
 
-        # Progress bar
-        for cycle_idx in tqdm(range(self.received_raw_data['num_cycles']), desc="Extracting features", unit="cycle"):
-            cycle_feats = []
-            # Extract from each sensor (use pre-loaded sensor_dfs)
-            for sensor_file in self.hydraulic_sensors:
-                arr_list = []
-                arr_list = [
-                                self.received_raw_data[sensor_file][j] 
-                                for j in range(max(0, cycle_idx - 5), cycle_idx + 1)
-                            ]
-                
-                feats = self.hydraulic_press_extract_features_with_trend(arr_list, window_size=5)[-1]
-                cycle_feats.extend(feats)
-            
-            all_features.append(cycle_feats)
+        
+        # Extract from each sensor (use pre-loaded sensor_dfs)
+        for sensor in self.hydraulic_sensors:
+            arr_list = []
+            for past_cycle in full_history:
+                if sensor in past_cycle:
+                    arr_list.append(np.array(past_cycle[sensor], dtype=np.float64))
+            if not arr_list:
+                self.get_logger().warning(f"No data for sensor {sensor}, skipping feature extraction. Assigning zeros.")
+                features.extend([0.0]*9)  # 9 features per sensor
+
+
+            single_sensor_feats = self.hydraulic_press_extract_features_with_trend(arr_list, window_size=5)[-1]
+            features.extend(single_sensor_feats)
+        
 
         # Feature names (17 sensors x 9 stats)
         stat_names = ['mean', 'std', 'min', 'max', 'rms', 'skew', 'kurt', 'ptp', 'trend']
         feature_names = [f"{sensor}_{stat}" for sensor in self.hydraulic_sensors for stat in stat_names]
         
-        # Create DataFrame
-        self.hydraulic_press_features_df = pd.DataFrame(all_features, columns=feature_names)
-        self.hydraulic_press_features_df.fillna(0, inplace=True)  # handle any NaNs just in case
-        
-    # TODO: INPROCESS 
+        if len(features) != 153:
+            self.get_logger().error(f"Feature count mismatch! Expected 153, got {len(features)}")
+            return None
+
+        return np.array(features).reshape(1, -1)  # (1, 153)
+    
     def hydraulic_press_extract_features_with_trend(self, arr_list, window_size=5):
         """
         Extract statistical and temporal trend features.
@@ -152,7 +156,6 @@ class Predictor_Node(Node):
             feats_all.append([mean_, std_, min_, max_, rms_, skew_, kurt_, ptp_, trend])
         return np.array(feats_all)
     
-    # TODO: INPROCESS 
     def listener_hydraulic_press_callback(self, msg: String):
         """
         Callback function for Hydraulic_Press subscription.
@@ -160,6 +163,13 @@ class Predictor_Node(Node):
         try: 
             received_data = json.loads(msg.data)
             self.received_raw_data = received_data
+            self.machine = "hydraulic_press"
+            # update history and keep only last 6 entries
+            self.hydraulic_history.append(self.received_raw_data)
+            if len(self.hydraulic_history) > 6:
+                self.hydraulic_history.pop(0) 
+
+
             self.hydraulic_press_generate_predictions()
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
@@ -169,29 +179,23 @@ class Predictor_Node(Node):
         Extract features and generate RUL predictions for Hydraulic_Press machine.
         """
                 
-        # update history and keep only last 6 entries
-        self.hydraulic_history.append(self.received_raw_data)
-        if len(self.hydraulic_history) >= 6:
-            self.hydraulic_history.pop(0) 
-        else:  # less than 6 entries, wait
-            return None  # wait until we have enough history
-
-        self.hydraulic_press_feature_extractor()
-        if self.hydraulic_press_features_df.empty:
+        
+        
+        X = self.hydraulic_press_feature_extractor()
+        if X is None or X.shape != (1, 153):
             self.get_logger().warning("No features extracted, skipping prediction.")
             return None
-        if self.hydraulic_press_features_df.shape[1] < 153:
-            self.get_logger().warning("Wrong number of features, skipping prediction.")
+        try:
+            X_scaled = self.hydraulic_press_scaler.transform(X)
+            rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
+            self.publish_generated_data(rul)
+            self.hydraulic_last_predicted_cycle = self.received_raw_data['cycle']
+        except Exception as e:
+            self.get_logger().error(f"Prediction error: {e}")
             return None
-        
-        X = self.hydraulic_press_features_df.values
-        X_scaled = self.hydraulic_press_scaler.transform(X)
-        rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
+    # ----------------------------------------------------------------
 
-        self.hydraulic_last_predicted_cycle = self.received_raw_data['cycle']
-        self.publish_generated_data(rul)
-
-
+    # Done - Leave Alone
     def load_process_pump_model(self):
         """
         Loads the pre-trained model and scaler for Process_Pump machine.
@@ -210,6 +214,8 @@ class Predictor_Node(Node):
         Callback function for Process_Pump subscription.
         """
         self.get_logger().info(f"Received Process_Pump message: {json.dumps(msg.data, indent=2)}")
+        # the whole process is pending implementation
+        self.machine = "process_pump" # place holder to not forget
     
 
     # TODO: PENDING either machine specific or generic - will be decided.
@@ -217,7 +223,16 @@ class Predictor_Node(Node):
         """
         Publishes generated sensor data to Sensors topic.
         """
-        print(rul)
+        cycle = self.received_raw_data.get('cycle', "unknown")
+        prediction_msg = String()
+        prediction_msg.data = json.dumps({
+                                            "machine": self.machine,
+                                            "cycle": cycle,
+                                            "rul": rul
+                                        })
+        self.prediction_publishers[self.machine].publish(prediction_msg)
+        self.get_logger().info(f"Published RUL prediction for {self.machine} at cycle {cycle}: RUL={rul}")
+
 
 def main(args=None):
     """
