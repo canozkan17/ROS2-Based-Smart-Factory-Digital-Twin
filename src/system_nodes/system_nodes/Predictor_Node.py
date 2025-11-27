@@ -61,8 +61,7 @@ class Predictor_Node(Node):
         self.load_process_pump_model()
 
         # Variable setup
-        self.received_raw_data = {}
-        self.machine = str()
+        
         
         # Hydraulic variables
         self.hydraulic_history = []
@@ -135,21 +134,19 @@ class Predictor_Node(Node):
         """
         try: 
             received_data = json.loads(msg.data)
-            self.received_raw_data = received_data
-            self.machine = "hydraulic_press"
             self.get_logger().info(f"Received Hydraulic_Press message")
             
             # update history and keep only last 6 entries
-            self.hydraulic_history.append(self.received_raw_data)
+            self.hydraulic_history.append(received_data)
             if len(self.hydraulic_history) > 6:
                 self.hydraulic_history.pop(0) 
 
-            self.hydraulic_press_generate_predictions()
+            self.hydraulic_press_generate_predictions(received_data)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    def hydraulic_press_generate_predictions(self):
+    def hydraulic_press_generate_predictions(self, received_data:dict):
         """
         Extract features and generate RUL predictions for Hydraulic_Press machine.
         """
@@ -160,8 +157,8 @@ class Predictor_Node(Node):
         try:
             X_scaled = self.hydraulic_press_scaler.transform(X)
             rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
-            self.publish_generated_data(rul)
-            self.hydraulic_last_predicted_cycle = self.received_raw_data['cycle']
+            self.publish_generated_data(rul, cycle=received_data['cycle'], machine="hydraulic_press")
+            self.hydraulic_last_predicted_cycle = received_data['cycle']
         except Exception as e:
             self.get_logger().error(f"Prediction error: {e}")
             return None
@@ -248,24 +245,22 @@ class Predictor_Node(Node):
         """
         try: 
             received_data = json.loads(msg.data)
-            self.received_raw_data = received_data
-            self.machine = "process_pump"
             self.get_logger().info(f"Received Process_Pump message")
 
             # update history and keep only last max_pump_history_length entries
-            self.pump_history.append(self.received_raw_data)
+            self.pump_history.append(received_data)
             if len(self.pump_history) > self.max_pump_history_length:
                 self.pump_history.pop(0)
             # before the required window is filled, pad with current data
             while len(self.pump_history) < self.max_pump_history_length:
-                self.pump_history.insert(0, self.received_raw_data)
+                self.pump_history.insert(0, received_data)
             
-            self.process_pump_generate_predictions()
+            self.process_pump_generate_predictions(received_data)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
     
-    def process_pump_generate_predictions(self):
+    def process_pump_generate_predictions(self, received_data:dict):
         """
         Generate RUL predictions for Process_Pump machine.
         """
@@ -281,7 +276,7 @@ class Predictor_Node(Node):
             self.get_logger().error(f"Prediction error: {e}")
             return None
         
-        self.publish_generated_data(rul)
+        self.publish_generated_data(rul, cycle=received_data['cycle'], machine="process_pump")
     # Helper
     def process_pump_feature_extractor(self):
         """
@@ -307,21 +302,22 @@ class Predictor_Node(Node):
     #----------------------------------------------------------------
 
 
-    def publish_generated_data(self, rul):
+    def publish_generated_data(self, rul:float, cycle:int, machine=None):
         """
         Generic publisher for RUL predictions.
         Selects the correct publisher based on machine type.
         
         """
-        cycle = self.received_raw_data.get('cycle', "unknown")
-        prediction_msg = String()
-        prediction_msg.data = json.dumps({
-                                            "machine": self.machine,
+        if machine is not None and rul is not None and cycle is not None:
+            
+            prediction_msg = String()
+            prediction_msg.data = json.dumps({
+                                            "machine": machine,
                                             "cycle": cycle,
                                             "rul": rul
                                         })
-        self.prediction_publishers[self.machine].publish(prediction_msg)
-        self.get_logger().info(f"Published RUL prediction for {self.machine} at cycle {cycle}: RUL={rul}")
+            self.prediction_publishers[machine].publish(prediction_msg)
+            self.get_logger().info(f"Published RUL prediction for {machine} at cycle {cycle}: RUL={rul}")
 
 def main(args=None):
     """

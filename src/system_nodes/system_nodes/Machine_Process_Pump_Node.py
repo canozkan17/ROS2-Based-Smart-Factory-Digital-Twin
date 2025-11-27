@@ -391,6 +391,9 @@ class Machine_Process_Pump_Sensor_Node(Node):
         Publishes generated sensor data to Sensors topic.
         """
         sensor_data = self.generate_sensor_data()
+
+        sensor_data['cycle'] = self.total_ran_cycles - 1
+
         sensor_msg = String()
         sensor_msg.data = json.dumps(sensor_data)
         self.publisher_sensors.publish(sensor_msg)
