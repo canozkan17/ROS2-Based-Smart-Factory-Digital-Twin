@@ -1,22 +1,29 @@
 # Edge AI Remaining Useful Life (RUL) Prediction for Industrial Machines
 
 ## Project Overview
-This project aims to build a ROS2-based Digital Twin for predictive maintenance in industrial environments. Using synthetic sensor data from six factory machines (three main, three auxiliary), the system predicts Remaining Useful Life (RUL) for each machine and dynamically manages production flow on Edge AI hardware (e.g., Raspberry Pi).
 
-### Key Philosophy
-- **Expert Models:** Six specialized models are trained, each tailored to the unique physics and failure modes of its respective machine.
-- **Controller Node:** RUL predictions are used by a controller node to implement rule-based maintenance actions load balancing.
-- **Target Metrics:** RUL prediction accuracy >80%, latency <50ms per node, and >25% reduction in downtime.
+This project implements a modular ROS2-based Digital Twin for predictive maintenance in industrial environments. Synthetic sensor data from factory machines is used to predict Remaining Useful Life (RUL) and dynamically manage production flow on Edge AI hardware (e.g., Raspberry Pi).
+
+### Key Concepts
+
+- **Expert Models:** Each machine has a dedicated, physics-informed model for RUL prediction.
+- **Predictor Node:** Central node for feature extraction and RUL inference using pre-trained XGBoost models.
+- **Job Scheduler Node:** Orchestrates production jobs, manages dependencies, and tracks completion.
+- **Controller Node (Planned):** Will handle maintenance actions and load balancing based on RUL predictions.
+- **Target Metrics:** RUL prediction accuracy >80%, latency <50ms per node, >25% reduction in downtime.
+
+---
 
 ## Machine List & Dataset Mapping
-Only the following datasets are used in the current implementation:
 
-| Type      | Machine Name     | ROS Topic        | Dependency      | Dataset Link                                                                 |
-|-----------|------------------|------------------|-----------------|-----------------------------------------------------------------------------|
-| Main 1    | Hydraulic Press  | /machine_press   | -               | https://archive.ics.uci.edu/ml/datasets/condition+monitoring+of+hydraulic+systems |
-| Helper 1  | Process Pump     | /machine_pump    | Feeds Press     | https://www.kaggle.com/datasets/anseldsouza/water-pump-rul-predictive-maintenance |
+| Type      | Machine Name     | ROS Topic                | Dependency      | Dataset Link                                                                 |
+|-----------|------------------|--------------------------|-----------------|-----------------------------------------------------------------------------|
+| Main 1    | Hydraulic Press  | `/Sensors/hydraulic_press` | -               | [UCI Hydraulic Systems](https://archive.ics.uci.edu/ml/datasets/condition+monitoring+of+hydraulic+systems) |
+| Helper 1  | Process Pump     | `/Sensors/process_pump`    | Feeds Press     | [Kaggle Water Pump RUL](https://www.kaggle.com/datasets/anseldsouza/water-pump-rul-predictive-maintenance) |
 
-Other machines and datasets are planned for future integration.
+Other machines and datasets will be integrated in future releases.
+
+---
 
 ## Architecture
 
@@ -24,42 +31,94 @@ Other machines and datasets are planned for future integration.
 
 ### Node Structure & Implementation Status
 
-- **machine_hydraulic_press_node** and **machine_process_pump_node**:  
-  Skeletons for these nodes have been established. They are intended to simulate sensor data streams for the hydraulic press and process pump, respectively. However, synthetic sensor data generation is not yet implemented.
-- **job_scheduler_node**:  
-  The initial structure is present, with TODOs outlining future scheduling logic and integration points.
-- **temp_gui_node**:  
-  A temporary, console-based GUI node is available for basic interaction and monitoring. This will be replaced by a Streamlit-based dashboard in future iterations.
-- **central_predictor_dispatcher_node** (Planned):  
-  This node will be responsible for distributing incoming sensor data to the appropriate expert models (pre-trained XGBoost regressors) and returning RUL predictions. Not yet implemented.
+- **machine_hydraulic_press_node**  
+  Simulates synthetic sensor data for the hydraulic press. Implements realistic degradation and process physics.
+- **machine_process_pump_node**  
+  Simulates synthetic sensor data for the process pump, including load and degradation effects.
+- **job_scheduler_node**  
+  Receives job orders, splits them into tasks, manages dependencies, and publishes jobs to machine nodes.
+- **predictor_node**  
+  (Previously called central_predictor_dispatcher_node) Subscribes to machine sensor topics, extracts features, loads pre-trained models, and publishes RUL predictions.
+- **controller_node** *(Planned)*  
+  Will subscribe to prediction topics and issue control commands (`REDUCE_LOAD`, `PAUSE_JOB`, `REDISTRIBUTE_JOB`) via `control_cmd` and `maintenance_queue` topics.
 
 #### ROS2 Node Graph
 
-![ROS2 Node Graph](rqt_graph_1.png)
+![ROS2 Node Graph](rosgraph.png)
 
-> The node graph above illustrates the current ROS2 communication structure. Note that several nodes are in the setup phase and do not yet produce or consume real sensor data.
+> The graph above shows the current ROS2 communication structure. Several nodes are in development; real sensor data and control logic are being integrated.
 
-## Has Been: Pre-ROS2 Work
+---
 
-- **Hydraulic Press Model:** Trained using the UCI Hydraulic Systems dataset. Full pipeline includes feature extraction, stratified train-test splitting, scaling, XGBoost regression, and drift diagnostics. Model and scaler are saved for deployment.
-- **Process Pump Model:** Trained using the Water Pump RUL dataset as a proxy for hydraulic pump RUL prediction. Similar pipeline and diagnostics applied.
-- **Diagnostics:** Feature importance, drift analysis, and performance metrics are generated and saved for both models.
-- **Project Migration:** As of November 2025, the project was moved from a Windows folder to a WSL environment under ~/capstone_project. Git history was preserved. Python virtual environment (venv/) was re-created, and dependencies are managed via requirements.txt.
+## Node Communication Flow
 
-## Current Progress (ROS2 & Beyond)
-- ROS2 node skeletons for hydraulic press and process pump established.
-- job_scheduler_node structure created, with future scheduling logic outlined.
-- temp_gui_node implemented for basic monitoring; Streamlit migration planned.
-- Initial ROS2 communication graph visualized via rqt_graph.
-- Models and diagnostics from pre-ROS2 phase ready for integration.
+- **Job_Scheduler_Node**  
+  Publishes job orders and listens for completion signals. Manages job dependencies and production status.
+- **MachineX_Sensor_Node**  
+  Receives job orders, simulates production cycles, and publishes synthetic sensor data.
+- **Predictor_Node**  
+  Listens to sensor data, extracts features, predicts RUL, and publishes results.
+- **Controller_Node** *(Planned)*  
+  Will listen to predictions and issue corrective/preventative actions:
+    - `REDUCE_LOAD`: Slows down machine via `control_cmd`.
+    - `PAUSE_JOB`: Temporarily halts production.
+    - `REDISTRIBUTE_JOB`: Sends jobs to `maintenance_queue` for rescheduling.
+
+Dashboard (Streamlit WebUI planned) will visualize job orders, alerts, maintenance queue, and machine status.
+
+---
+
+## Implementation Details
+
+### Synthetic Sensor Data Generation
+
+- Hydraulic Press:  
+  See [`Machine_Hydraulic_Press_Node`](src/system_nodes/system_nodes/Machine_Hydraulic_Press_Node.py) for realistic signal generation, degradation modeling, and process physics.
+- Process Pump:  
+  See [`Machine_Process_Pump_Node`](src/system_nodes/system_nodes/Machine_Process_Pump_Node.py) for load-sensitive and degradation-aware sensor simulation.
+
+### Job Scheduling
+
+- Job orders are created via GUI or JSON ([`temp_GUI_Node`](src/system_nodes/system_nodes/temp_GUI_Node.py)).
+- Scheduler splits jobs into tasks, assigns machines, and manages dependencies ([`Job_Scheduler_Node`](src/system_nodes/system_nodes/Job_Scheduler_Node.py)).
+- Completed tasks trigger scheduling of dependent jobs.
+
+### Prediction Pipeline
+
+- Predictor node loads pre-trained XGBoost models and scalers ([`Predictor_Node`](src/system_nodes/system_nodes/Predictor_Node.py)).
+- Features are extracted from recent sensor cycles.
+- RUL predictions are published for each machine.
+
+### Control Logic (Planned)
+
+- Controller node will subscribe to prediction topics.
+- Based on RUL and production status, it will publish control commands:
+    - `REDUCE_LOAD` (to `/machineX/control_cmd`)
+    - `PAUSE_JOB` (to `/machineX/control_cmd`)
+    - `REDISTRIBUTE_JOB` (to `/factory/maintenance_queue`)
+- These actions will be implemented in the next development phase.
+
+---
+
+## Current Progress
+
+- Synthetic sensor data generation for hydraulic press and process pump is implemented.
+- Job scheduling, dependency management, and completion tracking are functional.
+- Predictor node is integrated and provides RUL predictions.
+- Basic GUI node for job entry and monitoring is available.
+- Models and diagnostics from pre-ROS2 phase are ready for deployment.
+
+---
 
 ## Next Steps
-- Implement synthetic sensor data generation for all machine nodes.
-- Develop and integrate central_predictor_dispatcher_node to route sensor data to expert models and return RUL predictions.
-- Create a 2 way hand-shake between nodes for communication.
-- Add controler_node and its functions for responding to the predictions from the dispatcher. 
-- Test job sequence and complete MVP 
 
+- Implement controller_node and its actions (`REDUCE_LOAD`, `PAUSE_JOB`, `REDISTRIBUTE_JOB`).
+- Integrate control logic for maintenance and load balancing.
+- Expand dashboard for real-time monitoring and control.
+- Add support for additional machines and datasets.
+
+---
 
 ## Project Philosophy & Updates
-This README will be updated as new models, datasets, and architectural improvements are added. The focus remains on modular, scalable, and high-accuracy predictive maintenance for industrial digital twins.
+
+This project is designed for modularity, scalability, and high-accuracy predictive maintenance in industrial digital twins. The README will be updated as new models, datasets, and architectural improvements are added.
