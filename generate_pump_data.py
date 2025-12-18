@@ -21,7 +21,7 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
     """
     
     t = np.arange(total_rul, dtype=float)   # minutes since cycle start
-
+    
     # make current_rul reach 0 at the fnal timestamp
     current_rul = total_rul - t - 1 
     fraction = t / total_rul                # 0 -> 1 as we approach failure

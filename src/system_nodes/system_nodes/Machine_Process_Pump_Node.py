@@ -42,6 +42,7 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.publisher_sensors = self.create_publisher(String, "Sensors/process_pump", 10)
         
         # Loading Patterns for Sensor Data Generation
+        # REMOVED PATTERNS
         base_dir = os.path.dirname(os.path.abspath(__file__))
         deg_path = os.path.normpath(os.path.join(base_dir, "../../..", "pump_sensor_rul_hrs_data", "degradation_patterns.json"))
         noise_path = os.path.normpath(os.path.join(base_dir, "../../..", "pump_sensor_rul_hrs_data", "noise_characteristics.json"))
@@ -57,8 +58,9 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.total_ran_cycles = 0 # real cycle count in minutes
         self.current_task = {}
 
-        # random lifetime (700-837 hours, based on training dataset)
-        self.max_lifetime = random.randint(700, 837)  # in hours
+        # THIS MIGHT BE MINUTES
+        # random lifetime (500-800 hrs, based on training dataset)
+        self.max_lifetime = random.randint(500, 800)  # in hours
         self.get_logger().info(f"Process_Pump initialized with max lifetime: {self.max_lifetime} hours (ground truth, hidden)")
 
         # Simulation and production control flags
