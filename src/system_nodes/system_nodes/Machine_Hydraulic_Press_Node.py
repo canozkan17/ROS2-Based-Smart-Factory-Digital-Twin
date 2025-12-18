@@ -106,7 +106,6 @@ class Machine_Hydraulic_Press_Node(Node):
         self.get_logger().info("Machine Hydraulic Press node ready!")
         self.get_logger().info("Listening on 'Job_Orders' topic.")
         self.get_logger().info("Listening on 'Control_CMD' topic.")
-        self.get_logger().info("Listening on 'Completed' topic.")
 
 
 

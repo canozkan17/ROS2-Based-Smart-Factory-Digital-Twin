@@ -27,7 +27,9 @@ import numpy as np
 import rclpy
 import joblib
 import json
+import pickle
 import os
+import math
 
 # does not use dataframe for RPI performance reasons - ignored specific warning
 warnings.filterwarnings("ignore", message="X does not have valid feature names, but StandardScaler was fitted with feature names") 
@@ -56,19 +58,16 @@ class Predictor_Node(Node):
         # Adress setup
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
         self.root_path = os.path.abspath(os.path.join(self.current_dir, "../../.."))
-        # Load models and scalers
-        self.load_hydraulic_press_model()
-        self.load_process_pump_model()
-
-        # Variable setup
-        
-        
+                
         # Hydraulic variables
         self.hydraulic_history = []
+        self.hydraulic_last_predicted_cycle = -1
 
         # Process Pump variables
-        self.pump_history = [] # for last 5 cycles - each 60 seconds
-        self.max_pump_history_length = 5
+        self.pump_history = []                      # for all the cycles
+        self.last_callback_process_pump_cycle = -1
+        self.process_pump_ordered_features = []     # ordered features for Process_Pump model input 
+        self.pump_rolling_window = 5
 
         # Defaults
         self.hydraulic_sensors = [
@@ -81,41 +80,20 @@ class Predictor_Node(Node):
                                     'CP',                                          # 1 Hz (virtual)
                                     'SE'                                           # 1 Hz (virtual)
                                 ]
-        # the direct sensors used in 35 features for Process_Pump 
-        self.process_pump_direct_sensors = [
-                                                'sensor_02', 'sensor_01', 'sensor_03', 'sensor_36', 'sensor_49',
-                                                'sensor_42', 'sensor_26', 'sensor_00', 'sensor_13', 'sensor_28',
-                                                'sensor_29', 'sensor_45', 'sensor_34'
-                                            ] # 13
-        # the rolling sensors used in 35 features for Process_Pump - total makes the 35 features the model expects
-        self.roll_sensors = [
-                                'sensor_02', 'sensor_03', 'sensor_01', 'sensor_36', 'sensor_26',
-                                'sensor_28', 'sensor_29', 'sensor_00', 'sensor_13', 'sensor_32',
-                                'sensor_23', 'sensor_34', 'sensor_25', 'sensor_07', 'sensor_35',
-                                'sensor_06', 'sensor_49', 'sensor_30', 'sensor_22', 'sensor_14',
-                                'sensor_42', 'sensor_33'
-                            ]   # 22
-        # ordered features for Process_Pump model input 
-        self.ordered_features = [
-                                    'sensor_02_roll_mean', 'sensor_03', 'sensor_02', 'sensor_01_roll_mean', 'sensor_01',
-                                    'sensor_03_roll_mean', 'sensor_36_roll_mean', 'sensor_26_roll_mean', 'sensor_28_roll_mean',
-                                    'sensor_29_roll_mean', 'sensor_36', 'sensor_00_roll_mean', 'sensor_13_roll_mean',
-                                    'sensor_49', 'sensor_42', 'sensor_32_roll_mean', 'sensor_26', 'sensor_23_roll_mean',
-                                    'sensor_34_roll_mean', 'sensor_42_roll_mean', 'sensor_00', 'sensor_13', 'sensor_28',
-                                    'sensor_25_roll_mean', 'sensor_29', 'sensor_07_roll_mean', 'sensor_35_roll_mean',
-                                    'sensor_06_roll_mean', 'sensor_49_roll_mean', 'sensor_30_roll_mean', 'sensor_22_roll_mean',
-                                    'sensor_14_roll_mean', 'sensor_45', 'sensor_33_roll_mean', 'sensor_34'
-                                ] # 35
-
+    
         # Control flags
         self.process_finished = False
         self.user_input_received = False
+
+        # Load models and scalers
+        self.load_hydraulic_press_model()
+        self.load_process_pump_model()
         
         # Set-up logs
         self.get_logger().info("Predictor node ready!")
         self.get_logger().info("Listening on 'Sensors/ ' topic. For 2 machine sensors")
 
-    # HYDRAULIC PRESS MACHINE METHODS    
+    # HYDRAULIC PRESS MACHINE METHODS
     def load_hydraulic_press_model(self):
         """
         Loads the pre-trained model and scaler for Hydraulic_Press machine.
@@ -156,7 +134,8 @@ class Predictor_Node(Node):
             return None
         try:
             X_scaled = self.hydraulic_press_scaler.transform(X)
-            rul = float(self.hydraulic_press_model.predict(X_scaled)[0])
+            rul_cycles = float(self.hydraulic_press_model.predict(X_scaled)[0])
+            rul = rul_cycles / 60
             self.publish_generated_data(rul, cycle=received_data['cycle'], machine="hydraulic_press")
             self.hydraulic_last_predicted_cycle = received_data['cycle']
         except Exception as e:
@@ -180,6 +159,7 @@ class Predictor_Node(Node):
             if not arr_list:
                 self.get_logger().warning(f"No data for sensor {sensor}, skipping feature extraction. Assigning zeros.")
                 features.extend([0.0]*9)  # 9 features per sensor
+                continue
 
 
             single_sensor_feats = self.hydraulic_press_extract_features_with_trend(arr_list, window_size=5)[-1]
@@ -235,9 +215,44 @@ class Predictor_Node(Node):
         self.process_pump_model = xgb.XGBRegressor()
         self.process_pump_model.load_model(model)
 
-        scaler= os.path.join(self.root_path, 'pump_sensor_rul_hrs_data', 'scaler_pump_top35_features.pkl')
-        self.process_pump_scaler = joblib.load(scaler)
-        self.get_logger().info("Process_Pump model and scaler loaded.")
+        bundle = joblib.load(os.path.join(self.root_path, "pump_sensor_rul_hrs_data", "scaler_pump_top35_features.pkl"))
+        self.process_pump_scaler = bundle if hasattr(bundle, "transform") else bundle["scaler"]
+
+        scaler_features = list(self.process_pump_scaler.feature_names_in_)
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # json will be in the same dir in RPI deployment [Activate in Edge Deployment]
+        # json_path = os.path.join(base_dir, "selected_cols_top35.json")
+        json_path = os.path.normpath(os.path.join(  base_dir,
+                                                    "../../..",  # Currenly (temporarily) 3 levels up to Capstone_Project root
+                                                    "pump_sensor_rul_hrs_data/diagnostics_out/selected_cols_top35.json"
+                                                ))
+        with open(json_path, "r") as f:
+            self.process_pump_ordered_features = json.load(f)
+        
+        json_features = self.process_pump_ordered_features
+
+        self.process_pump_feature_index = [json_features.index(name) for name in scaler_features]
+        if sorted(scaler_features) != sorted(json_features):
+            raise RuntimeError("Process Pump scaler feature list does NOT match JSON!")
+        
+        
+        if not isinstance(self.process_pump_ordered_features, list) or len(self.process_pump_ordered_features) != 35:
+            self.get_logger().error(f"Selected feature list invalid. Expected 35, got {len(self.process_pump_ordered_features)}")
+        else:
+            self.get_logger().info(f"Loaded {len(self.process_pump_ordered_features)} ordered features.")
+
+        means_path = os.path.join(
+            self.root_path,
+            "pump_sensor_rul_hrs_data",
+            "diagnostics_out",
+            "selected_cols_top35_means.json"
+        )
+        with open(means_path, "r") as f:
+            self.process_pump_feature_defaults = json.load(f)
+
+        self.get_logger().info("Process_Pump Model & Scaler & Ordered List loaded.")
     
     def listener_process_pump_callback(self, msg: String):
         """
@@ -249,56 +264,206 @@ class Predictor_Node(Node):
 
             # update history and keep only last max_pump_history_length entries
             self.pump_history.append(received_data)
-            if len(self.pump_history) > self.max_pump_history_length:
+
+            if len(self.pump_history) < self.pump_rolling_window:
+                self.get_logger().warning(f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}")
+                return
+
+            if len(self.pump_history) > 1000:       # for RPI memory limits
                 self.pump_history.pop(0)
-            # before the required window is filled, pad with current data
-            while len(self.pump_history) < self.max_pump_history_length:
-                self.pump_history.insert(0, received_data)
+            
+            # Wait until enough history is collected
+            if len(self.pump_history) < self.pump_rolling_window:
+                self.get_logger().warning(f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}. ")
+                return None
             
             self.process_pump_generate_predictions(received_data)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
     
-    def process_pump_generate_predictions(self, received_data:dict):
+    def process_pump_generate_predictions(self, received_data: dict):
         """
         Generate RUL predictions for Process_Pump machine.
+        Ensures unit consistency: model predicts rul_minutes/MAX_RUL_MINUTES.
         """
-        X = self.process_pump_feature_extractor()
-        if X is None or X.shape != (1, 35):
-            self.get_logger().warning("No features extracted, skipping prediction.")
+        if len(self.pump_history) < self.pump_rolling_window:
+            self.get_logger().warning(f"Not enough history: {len(self.pump_history)}/{self.pump_rolling_window}.")
             return None
-        try:
-            X_scaled = self.process_pump_scaler.transform(X)
-            rul_hrs = float(self.process_pump_model.predict(X_scaled)[0])
-            rul = round(rul_hrs * 60)  # hours -> cycles (since 1 cycle = 60 seconds)
-        except Exception as e:
-            self.get_logger().error(f"Prediction error: {e}")
+
+        feature_vec = self.process_pump_feature_extractor()
+        if feature_vec is None:
             return None
         
-        self.publish_generated_data(rul, cycle=received_data['cycle'], machine="process_pump")
+        feature_vec = feature_vec[:, self.process_pump_feature_index]
+        X_scaled = self.process_pump_scaler.transform(feature_vec)
+
+        try:
+            y_hat_norm = float(self.process_pump_model.predict(X_scaled)[0])
+            
+            MAX_RUL_MINUTES = 50249.0 # max rul in training in minutes
+            
+            # Model output: rul_minutes / MAX_RUL_MINUTES
+            rul_minutes = float(np.clip(y_hat_norm, 0.0, 1.0)) * MAX_RUL_MINUTES
+            
+            # Convert minutes to hours (compatible with Hydraulic Press)
+            rul_hrs = rul_minutes / 60.0
+            
+            # Physical constraint: Remaining RUL cannot exceed maximum lifetime elapsed
+            cycle = received_data.get('cycle', len(self.pump_history) - 1)
+            elapsed_minutes = float(cycle)
+            elapsed_hours = elapsed_minutes / 60.0
+            max_remaining = (MAX_RUL_MINUTES / 60.0) - elapsed_hours
+            rul_hrs = float(np.clip(rul_hrs, 0.0, max_remaining))
+            
+            rul = round(rul_hrs, 3)
+
+            if rul < 0:
+                self.get_logger().warning(f"Predicted negative RUL ({rul} hrs), setting to 0.")
+                rul = 0.0
+
+        except Exception as e:
+            self.get_logger().error(f"Prediction error: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            return None
+        
+        cycle = received_data.get('cycle', len(self.pump_history) - 1)
+        elapsed_hours = received_data.get('elapsed_hours', float(cycle) / 60.0)
+        
+        self.get_logger().info(
+                                f"[Process Pump] Cycle: {cycle} min | "
+                                f"Elapsed: {elapsed_hours:.2f}h | "
+                                f"Predicted RUL: {rul:.2f}h | "
+                                f"Norm output: {y_hat_norm:.6f}"
+                            )
+        
+        self.publish_generated_data(rul, cycle=cycle, machine="process_pump")
     # Helper
     def process_pump_feature_extractor(self):
         """
         Feature extraction for Process_Pump machine sensor data.
+        Ensures age_ratio matches training: elapsed_hours / MAX_RUL_HOURS
         """
         history = self.pump_history.copy()
         features = {}
+        window = self.pump_rolling_window
 
-        # Direct sensor features
-        for sensor in self.process_pump_direct_sensors:
-            sensor_values = [cycle_data.get(sensor, 0.0) for cycle_data in history]
-            features[sensor] = sensor_values[-1]  # last value
+        if len(history) < window:
+            self.get_logger().warning("Not enough history for Process_Pump feature extraction.")
+            return None
         
-        # Rolling sensor features
-        for sensor in self.roll_sensors:
-            sensor_values = [cycle_data.get(sensor, 0.0) for cycle_data in history]
-            arr = np.array(sensor_values)
-            features[f"{sensor}_roll_mean"] = np.mean(arr)
+        # Training dataset constant
+        MAX_RUL_HOURS = 837.483  # matching training
+    
+        # Time features from history
+        time_features = {'elapsed_minutes', 'elapsed_hours', 'age_ratio'}
+        required_base_sensors = set()
+        
+        for feat in self.process_pump_ordered_features:
+            base_name = feat.replace('_roll_mean', '').replace('_roll_std', '')
+            if base_name not in time_features:
+                required_base_sensors.add(base_name)
+
+        # Extract time sequences
+        elapsed_minutes_seq = []
+        elapsed_hours_seq = []
+        age_ratio_seq = []
+        
+        for cycle_data in history:
+            # Cycle = in minutes
+            cycle_num = cycle_data.get('cycle', 0)
+            elapsed_min = cycle_data.get('elapsed_minutes', float(cycle_num))
+            elapsed_hrs = cycle_data.get('elapsed_hours', elapsed_min / 60.0)
             
-        # Arrange features in the expected order
-        X = [features.get(feat, 0.0) for feat in self.ordered_features]
-        return np.array(X).reshape(1, -1)
+            # age_ratio = elapsed_hours / MAX_RUL_HOURS (same as training)
+            age_ratio = float(np.clip(elapsed_hrs / MAX_RUL_HOURS, 1e-6, 1.0))
+            
+            elapsed_minutes_seq.append(float(elapsed_min))
+            elapsed_hours_seq.append(float(elapsed_hrs))
+            age_ratio_seq.append(age_ratio)
+
+        def last_roll(seq):
+            """Calculate rolling mean and std for last window."""
+            if len(seq) < window:
+                return seq[-1], 0.0
+            series = pd.Series(seq, dtype=float)
+            rolling_mean = series.rolling(window=window, min_periods=1).mean().iloc[-1]
+            rolling_std = series.rolling(window=window, min_periods=1).std(ddof=1).iloc[-1]
+            if pd.isna(rolling_std):
+                rolling_std = 0.0
+            return float(rolling_mean), float(rolling_std)
+
+        # Calculate rolling features for time variables
+        elapsed_min_mean, elapsed_min_std = last_roll(elapsed_minutes_seq)
+        elapsed_hrs_mean, elapsed_hrs_std = last_roll(elapsed_hours_seq)
+        age_ratio_mean, age_ratio_std = last_roll(age_ratio_seq)
+
+        # Add time features in order
+        if 'elapsed_minutes_roll_mean' in self.process_pump_ordered_features:
+            features['elapsed_minutes_roll_mean'] = elapsed_min_mean
+        if 'elapsed_minutes_roll_std' in self.process_pump_ordered_features:
+            features['elapsed_minutes_roll_std'] = elapsed_min_std
+        if 'elapsed_hours_roll_mean' in self.process_pump_ordered_features:
+            features['elapsed_hours_roll_mean'] = elapsed_hrs_mean
+        if 'elapsed_hours_roll_std' in self.process_pump_ordered_features:
+            features['elapsed_hours_roll_std'] = elapsed_hrs_std
+        if 'age_ratio_roll_mean' in self.process_pump_ordered_features:
+            features['age_ratio_roll_mean'] = age_ratio_mean
+        if 'age_ratio_roll_std' in self.process_pump_ordered_features:
+            features['age_ratio_roll_std'] = age_ratio_std
+        if 'age_ratio' in self.process_pump_ordered_features:
+            features['age_ratio'] = age_ratio_seq[-1]
+
+        # Sensor rolling features
+        for sensor_name in required_base_sensors:
+            all_values = []
+            for cycle_data in history:
+                val = cycle_data.get(sensor_name)
+                if val is not None:
+                    all_values.append(float(val))
+                else:
+                    default_val = self.process_pump_feature_defaults.get(sensor_name, 0.0)
+                    all_values.append(default_val)
+
+            if len(all_values) == 0:
+                continue
+
+            series = pd.Series(all_values, dtype=float)
+            
+            # Current value
+            if sensor_name in self.process_pump_ordered_features:
+                features[sensor_name] = float(series.iloc[-1])
+
+            # Rolling mean and std
+            roll_mean_name = f"{sensor_name}_roll_mean"
+            roll_std_name = f"{sensor_name}_roll_std"
+
+            if roll_mean_name in self.process_pump_ordered_features:
+                current_roll_mean = series.rolling(window=window, min_periods=1).mean().iloc[-1]
+                if pd.notna(current_roll_mean):
+                    features[roll_mean_name] = float(current_roll_mean)
+
+            if roll_std_name in self.process_pump_ordered_features:
+                current_roll_std = series.rolling(window=window, min_periods=1).std(ddof=1).iloc[-1]
+                if pd.isna(current_roll_std):
+                    current_roll_std = 0.0
+                features[roll_std_name] = float(current_roll_std)
+
+        # Arrange features in expected order
+        X = []
+        missing_feats = []
+        for feat in self.process_pump_ordered_features:
+            val = features.get(feat, None)
+            if val is None or (isinstance(val, float) and math.isnan(val)):
+                val = self.process_pump_feature_defaults.get(feat, 0.0)
+                missing_feats.append(feat)
+            X.append(val)
+        
+        if missing_feats:
+            self.get_logger().debug(f"Filled defaults for: {missing_feats[:5]}...")
+        
+        return np.array(X, dtype=np.float64).reshape(1, -1)
     #----------------------------------------------------------------
 
 
@@ -309,7 +474,7 @@ class Predictor_Node(Node):
         
         """
         if machine is not None and rul is not None and cycle is not None:
-            
+
             prediction_msg = String()
             prediction_msg.data = json.dumps({
                                             "machine": machine,
