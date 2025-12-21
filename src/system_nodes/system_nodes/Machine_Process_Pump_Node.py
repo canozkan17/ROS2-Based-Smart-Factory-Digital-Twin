@@ -10,6 +10,8 @@ Publishes generated data to Sensors topic.
 DOES NOT publish status to Completed Topic - as this is a helper machine. 
 """
 
+
+
 from std_msgs.msg import String
 from rclpy.node import Node
 from typing import Dict
@@ -41,16 +43,8 @@ class Machine_Process_Pump_Sensor_Node(Node):
         # Publisher for Sensors data
         self.publisher_sensors = self.create_publisher(String, "Sensors/process_pump", 10)
         
-        # Loading Patterns for Sensor Data Generation
-        # REMOVED PATTERNS
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        deg_path = os.path.normpath(os.path.join(base_dir, "../../..", "pump_sensor_rul_hrs_data", "degradation_patterns.json"))
-        noise_path = os.path.normpath(os.path.join(base_dir, "../../..", "pump_sensor_rul_hrs_data", "noise_characteristics.json"))
-        
-        with open(deg_path, 'r') as f:
-            self.degradation_patterns = json.load(f)
-        with open(noise_path, 'r') as f:
-            self.noise_chars = json.load(f)
+        self.SEED = 42
+        self.RNG = np.random.default_rng(seed=self.SEED)
             
         self.get_logger().info("Real degradation and noise patterns loaded.")
 
@@ -74,6 +68,24 @@ class Machine_Process_Pump_Sensor_Node(Node):
         np.random.seed(42)
         random.seed(42) 
 
+        # Sensor Parameters
+        rng = np.random.default_rng(42)
+        self.base_vib = rng.uniform(0.02, 0.3)
+        self.failure_vib = rng.uniform(2.0, 6.0)
+        self.vib_noise_scale = rng.uniform(0.01, 0.1)
+
+        self.base_temp = rng.uniform(40.0, 60.0)
+        self.k_temp = rng.uniform(0.005, 0.02)
+        self.temp_noise_scale = rng.uniform(0.05, 0.3)
+
+        self.base_pressure = rng.uniform(7.6, 8.4)
+        self.k_pressure = rng.uniform(0.0005, 0.003)
+        self.pressure_noise_scale = rng.uniform(0.01, 0.08)
+
+        self.coupling_factor = rng.uniform(0.4, 0.9)
+        self.vib_motor_noise = rng.uniform(0.005, 0.05)
+
+
         self.get_logger().info("Process Pump Sensor node ready!")
         self.get_logger().info("Listening on 'Job_Orders' topic.")
         self.get_logger().info("Listening on 'Control_CMD' topic.")
@@ -92,35 +104,23 @@ class Machine_Process_Pump_Sensor_Node(Node):
                 if task['machine'] == 'hydraulic_press' and task['depending_on'] is None:
                     
                     self.current_task = task
+                    self.cycles_to_run = task['task_time']
                     
-                    # Calculate cycles needed based on task_time (from Job_Scheduler)
-                    # Each cycle simulates 60 seconds - training dataset compatibility
-                    try:
-                        task_time_seconds = float(self.current_task['task_time'])
-                        # math.ceil to ensure to run enough cycles
-                        self.cycles_to_run = int(math.ceil(task_time_seconds / 60.0))
-                        self.cycles_done = 0
-                        
-                        if self.cycles_to_run <= 0:
-                            self.get_logger().warn("Task time is zero or negative. Skipping task.")
-                            self.current_task = {}
-                            return
-
-                    except (KeyError, ValueError, TypeError) as e:
-                        self.get_logger().error(f"Invalid or missing 'task_time' in job. Cannot start. Error: {e}")
+                    if self.cycles_to_run <= 0:
+                        self.get_logger().warn("Task time is zero or negative. Skipping task.")
                         self.current_task = {}
+                        self.get_logger().error(f"Invalid or missing 'task_time' in job. Cannot start.")
                         return
 
                     self.get_logger().info(
                                                 f"\nReceived task: '{json.dumps(task['job_ID'], indent=2)}'. "
-                                                f"Total time: {task_time_seconds}s. "
                                                 f"Calculated cycles: {self.cycles_to_run}"
                                             )
 
                     # Start production loop based on simulation mode
                     if self.simulation_mode == "REALTIME":
                         self.get_logger().info(f"Starting REALTIME simulation ({self.cycles_to_run} cycles)...")
-                        # Create a non-blocking timer that calls the function every 60s
+                        # Create a non-blocking timer that calls the function every minute
                         self.production_timer = self.create_timer(60.0, self.run_production_cycle)
                     
                     elif self.simulation_mode == "FAST":
@@ -142,65 +142,47 @@ class Machine_Process_Pump_Sensor_Node(Node):
         """
         self.get_logger().info(f"Received Control Command: {json.dumps(msg.data, indent=2)}")#TODO: Implement control cmd in due time.&& check sent data format.
 
-    def generate_sensor_data(self):
+    def generate_cycle(self, total_rul: int, rng: np.random.Generator):
         """
-        Generates one timestep of realistic synthetic sensor data for the pump.
+        Generate synthetic sensor data for a single pump cycle until failure.
         """
-        sensor_data = {}
 
-        # Calculate elapsed time in hours
-        elapsed_minutes = float(self.total_ran_cycles)
-        elapsed_hours = elapsed_minutes / 60.0
+        t = float(self.total_ran_cycles)
+        current_rul = total_rul - t - 1
+        fraction = t / total_rul
 
-        t = min(1.0, elapsed_hours / float(self.max_lifetime))  # normalized time [0,1]
-
-        for sensor_name, pattern in self.degradation_patterns.items():
-            
-            healthy_mean = pattern['healthy_mean']
-            eol_mean = pattern.get('eol_mean', healthy_mean)
-
-            trend = pattern.get('trend', 'increasing')
-            
-            rate_per_hour = float(pattern.get('degradation_rate_per_hour', 0.0))
-
-            # noise characteristics
-            noise_char = self.noise_chars.get(sensor_name, {})
-            healthy_noise_std = float(noise_char.get('healthy_noise_std', max(0.01 * abs(healthy_mean), 0.001)))
-            noise_ratio = noise_char.get('noise_increase_ratio', 1.0)
-            noise_ratio = float(noise_ratio)
-
-            delta = eol_mean - healthy_mean
-            delta_sign = 0.0
-            if abs(delta) > 0.000001:
-                delta_sign = np.sign(delta)
-                # if conflict: force to mean based direction
-                if (trend == 'increasing' and delta_sign < 0) or (trend == 'decreasing' and delta_sign > 0):
-                    trend = 'increasing' if delta_sign > 0 else 'decreasing'
-
-            # training-derived rate_per_hour
-            if rate_per_hour != 0.0:
-                direction_sign = 1.0 if trend == 'increasing' else -1.0
-                base_value = healthy_mean + (direction_sign * abs(rate_per_hour) * elapsed_hours)
-                # to avoid overshooting beyond EOL mean
-                if trend == 'increasing':
-                    base_value = float(np.clip(base_value, min(healthy_mean, eol_mean), max(healthy_mean, eol_mean)))
-                else:
-                    base_value = float(np.clip(base_value, min(eol_mean, healthy_mean), max(eol_mean, healthy_mean)))
-            else: # fallback to linear interpolation healthy->EOL over assigned lifetime
-                delta = eol_mean - healthy_mean
-                effective_rate_per_hour = delta / float(self.max_lifetime)
-                base_value = healthy_mean + (effective_rate_per_hour * elapsed_hours)
-
-
-            # Noise mimics real behaviour
-            current_noise_std = healthy_noise_std * (1.0 + (noise_ratio - 1.0) * t)
-            noise = np.random.normal(0, max(current_noise_std / 5.0, 0.0001))
-
-            value = base_value + noise
-            sensor_data[sensor_name] = round(float(value),6)
-
+        # Critical region (last 100 minutes)
+        critical_mask = current_rul <= 100
+        critical_boost = np.where(
+                                    critical_mask,
+                                    1.0 + (100 - current_rul) / 100 * 0.5,
+                                    1.0
+                                )
+        vibration = (
+                        self.base_vib
+                        + (self.failure_vib - self.base_vib) * (fraction ** 2) * critical_boost
+                        + rng.normal(0.0, self.vib_noise_scale * (1.0 + fraction), size=1)
+                    )[0]
+        temp_motor = (
+                        self.base_temp + self.k_temp * t * critical_boost
+                        + rng.normal(0.0, self.temp_noise_scale, size=1)
+                    )[0]
+        pressure = (
+                        self.base_pressure - self.k_pressure * t * critical_boost
+                        + rng.normal(0.0, self.pressure_noise_scale * (1.0 + 0.5 * fraction), size=1)
+                    )[0]
+        vib_motor = (
+                        vibration * self.coupling_factor
+                        + rng.normal(0.0, self.vib_motor_noise * (1.0 + fraction), size=1)
+                    )[0]
+        cycle_output = {
+                            "vibration": float(vibration),
+                            "temp_motor": float(temp_motor),
+                            "pressure": float(pressure),
+                            "vib_motor": float(vib_motor),
+                        }
         self.total_ran_cycles += 1
-        return sensor_data
+        return cycle_output
     
     def run_production_cycle(self):
         """
@@ -265,37 +247,37 @@ class Machine_Process_Pump_Sensor_Node(Node):
     def publish_generated_data(self):
         """
         Publishes generated sensor data to Sensors topic.
-        Ensures elapsed_hours and age_ratio match training format.
         """
-        sensor_data = self.generate_sensor_data()
-        
+
         # Cycle info in minutes
         cycle = self.total_ran_cycles  
         
         # Elapsed time in hours
         elapsed_hours = float(cycle) / 60.0
         
-        # age_ratio as in training: elapsed_hours / max_lifetime
-        # max_lifetime is already in hours
-        age_ratio = min(1.0, elapsed_hours / float(self.max_lifetime))
+        # Ground Truth RUL
+        gt_rul_hours = max(0.0, self.max_lifetime - elapsed_hours)
+        gt_rul_minutes = max(0.0, (self.max_lifetime * 60) - cycle)
         
+        sensor_data = self.generate_cycle(total_rul= int(gt_rul_minutes), rng=self.RNG)
+        
+                
         sensor_data['cycle'] = cycle
         sensor_data['elapsed_hours'] = round(elapsed_hours, 6)
         sensor_data['elapsed_minutes'] = float(cycle)
-        sensor_data['age_ratio'] = round(age_ratio, 6)
         
+        # REMOVE AFTER DONE
+        print(sensor_data)
+        # =======================
+
         msg = String()
         msg.data = json.dumps(sensor_data)
         self.publisher_sensors.publish(msg)
         
         self.get_logger().info(
-                                f"Published sensor data for cycle {cycle} (minute), "
-                                f"elapsed={elapsed_hours:.2f}h, age_ratio={age_ratio:.4f}."
+                                f"Published sensor data for cycle: {cycle} (in minutes) "
                             )
-        
-        # Ground Truth RUL
-        gt_rul_hours = max(0.0, self.max_lifetime - elapsed_hours)
-        self.get_logger().info(f"GroundTruth RUL={gt_rul_hours:.1f} hours after cycle {self.total_ran_cycles - 1}.")
+        self.get_logger().info(f"GroundTruth RUL={gt_rul_hours:.1f} hours after cycle {self.total_ran_cycles}.")
 
 
 def main(args=None):
@@ -310,3 +292,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

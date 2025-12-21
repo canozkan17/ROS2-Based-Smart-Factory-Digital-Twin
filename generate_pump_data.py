@@ -88,12 +88,7 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
 
 # DATASET GENERATOR
 
-def generate_dataset(
-                    n_cycles: int,
-                    min_rul: int,
-                    max_rul: int,
-                    output_path: str
-                ):
+def generate_dataset(n_cycles: int, min_rul: int, max_rul: int, output_path: str):
     dfs = []
 
     for cycle_id in range(1, n_cycles + 1):
