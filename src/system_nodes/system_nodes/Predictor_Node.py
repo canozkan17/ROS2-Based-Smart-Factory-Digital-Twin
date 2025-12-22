@@ -5,7 +5,7 @@ ROS2 Node for generating predictions according to the machine sensor data in the
 
 Subscribes to Sensors topic for raw data input. 
 
-1- Loads scaler and model to memory on initialization. 
+1- Loads Models and featurelists into memory on initialization. 
 2- Gets the raw data input from Sensors/machine as JSON file.
 3- Preprocesses the raw data using training scaler and/or feature extraction.
 4- Generates RUL predictions
@@ -13,7 +13,7 @@ Subscribes to Sensors topic for raw data input.
 
 Publishes selected job order to Predictions Topic. 
 """
-from prediction_handler import process_pump_prediction_handler as pp_handler
+from system_nodes.prediction_handler import process_pump_prediction_handler as pp_handler
 
 from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
@@ -33,7 +33,7 @@ class Predictor_Node(Node):
     def __init__(self):
         """
         Initialize the Predictor node, set up subscriptions and publishers.
-        Get models and scalers from disk into memory.
+        Get models and scalers from disk into memory via handlers at ~/prediction_handler.
         set up variables/constants and flags.
         """
         super().__init__('Predictor_Node')
@@ -53,8 +53,6 @@ class Predictor_Node(Node):
         # Adress setup
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
         self.root_path = os.path.abspath(os.path.join(self.current_dir, "../../.."))
-                
-
 
         # Process Pump variables
         self.pump_history = []                      # for all the cycles
@@ -67,15 +65,12 @@ class Predictor_Node(Node):
         # Control flags
         self.process_finished = False
         self.user_input_received = False
-
-
         
         # Set-up logs
         self.get_logger().info("Predictor node ready!")
         self.get_logger().info("Listening on 'Sensors/ ' topic. For 2 machine sensors")
 
-    # PROCESS PUMP MACHINE METHODS
-    
+    # PROCESS PUMP MACHINE METHOD
     def listener_process_pump_callback(self, msg: String):
         """
         Callback function for Process_Pump subscription.
@@ -99,6 +94,7 @@ class Predictor_Node(Node):
                 self.get_logger().warning(f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}. ")
                 return None
             
+            # WHERE MAGIC HAPPENS
             self.predicted_rul_process_pump = pp_handler.get_prediction(self.pump_history)
 
             self.publish_generated_data(

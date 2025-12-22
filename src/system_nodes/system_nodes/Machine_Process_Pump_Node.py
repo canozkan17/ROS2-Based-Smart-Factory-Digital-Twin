@@ -52,9 +52,9 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.total_ran_cycles = 0 # real cycle count in minutes
         self.current_task = {}
 
-        # THIS MIGHT BE MINUTES
         # random lifetime (500-800 hrs, based on training dataset)
         self.max_lifetime = random.randint(500, 800)  # in hours
+        self.total_lifetime_minutes = self.max_lifetime * 60  # in minutes
         self.get_logger().info(f"Process_Pump initialized with max lifetime: {self.max_lifetime} hours (ground truth, hidden)")
 
         # Simulation and production control flags
@@ -92,7 +92,6 @@ class Machine_Process_Pump_Sensor_Node(Node):
 
     
     # Callback functions
-    #--------------------
     # Callback for Job Orders
     def listener_job_orders_callback(self, msg: String):
         """
@@ -133,7 +132,6 @@ class Machine_Process_Pump_Sensor_Node(Node):
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    #--------------------
     # Callback for Control CMD
     def listener_callback_control_cmd(self, msg: String):
         """
@@ -257,18 +255,17 @@ class Machine_Process_Pump_Sensor_Node(Node):
         
         # Ground Truth RUL
         gt_rul_hours = max(0.0, self.max_lifetime - elapsed_hours)
-        gt_rul_minutes = max(0.0, (self.max_lifetime * 60) - cycle)
         
-        sensor_data = self.generate_cycle(total_rul= int(gt_rul_minutes), rng=self.RNG)
+        sensor_data = self.generate_cycle(
+                                            total_rul=self.total_lifetime_minutes,
+                                            rng=self.RNG
+                                        )
         
                 
         sensor_data['cycle'] = cycle
         sensor_data['elapsed_hours'] = round(elapsed_hours, 6)
         sensor_data['elapsed_minutes'] = float(cycle)
-        
-        # REMOVE AFTER DONE
-        print(sensor_data)
-        # =======================
+
 
         msg = String()
         msg.data = json.dumps(sensor_data)
