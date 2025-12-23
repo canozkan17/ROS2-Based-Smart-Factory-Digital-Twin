@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/canozkan/Capstone_Project/venv/bin/python3.12
 # EASY-INSTALL-ENTRY-SCRIPT: 'system-nodes','console_scripts','process_pump_sensor'
 import re
 import sys

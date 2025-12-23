@@ -21,10 +21,9 @@ Later evolves to streamlit dashboard for better GUI.
 import os
 import json
 import rclpy
-import launch
 from rclpy.node import Node
 from std_msgs.msg import String
-import launch.launch_description_sources
+
 
 class temp_GUI_Node(Node):
     """ROS2 Node for overviewing the whole system."""

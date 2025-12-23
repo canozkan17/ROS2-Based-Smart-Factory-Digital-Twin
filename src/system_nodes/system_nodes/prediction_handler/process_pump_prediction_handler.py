@@ -1,6 +1,5 @@
 import os
 import json
-import math
 import numpy as np
 import xgboost as xgb
 import onnxruntime as ort
@@ -188,7 +187,7 @@ def get_prediction(history):
 
             if is_critical:
                 rul_short = float(stg2a_regressor.predict(X_input)[0])                          # type: ignore
-                if rul_short < 1000:
+                if rul_short < 100:
                     rul = rul_short
                 if rul_short <= 20:
                     rul = float(stg2b_regressor.predict(X_input)[0])                            # type: ignore

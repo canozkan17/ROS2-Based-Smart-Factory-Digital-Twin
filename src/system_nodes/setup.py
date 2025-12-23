@@ -22,7 +22,7 @@ setup(
     maintainer_email='can.ozkan.de@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
-    tests_require=['pytest'],
+#    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'hydraulic_press_sensor = system_nodes.Machine_Hydraulic_Press_Node:main',
@@ -30,6 +30,7 @@ setup(
             'job_scheduler = system_nodes.Job_Scheduler_Node:main',
             'temp_gui = system_nodes.temp_GUI_Node:main',
             'predictor = system_nodes.Predictor_Node:main',
+            'controller = system_nodes.Controller_Node:main'
         ],
     },
 )

@@ -26,5 +26,11 @@ def generate_launch_description():
                 package='system_nodes',
                 executable='predictor',
                 name='predictor_node'
+            ),
+        
+        Node(
+                package='system_nodes',
+                executable='controller',
+                name='controller_node'
             )
     ])

@@ -14,15 +14,12 @@ DOES NOT publish status to Completed Topic - as this is a helper machine.
 
 from std_msgs.msg import String
 from rclpy.node import Node
-from typing import Dict
 import numpy as np
 import threading
-import logging
 import random
 import rclpy
 import json
-import math
-import os
+
 
 class Machine_Process_Pump_Sensor_Node(Node):
     """ROS2 Node for generating synthetic sensor data for Process Pump Machine."""
@@ -37,14 +34,13 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.subscription_job_order = self.create_subscription(String, 'Job_Orders', self.listener_job_orders_callback, 10)
     
         # Subscription to Control CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd = self.create_subscription(String, 'control_CMD/process_pump', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd_2 = self.create_subscription(String, 'control_CMD/hydraulic_press', self.listener_callback_control_cmd, 10) # listens to the main machine too.
         
 
         # Publisher for Sensors data
         self.publisher_sensors = self.create_publisher(String, "Sensors/process_pump", 10)
         
-        self.SEED = 42
-        self.RNG = np.random.default_rng(seed=self.SEED)
             
         self.get_logger().info("Real degradation and noise patterns loaded.")
 
@@ -64,9 +60,14 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.cycles_to_run = 0
         self.cycles_done = 0
 
+
         # Defaults
         np.random.seed(42)
         random.seed(42) 
+        self.SEED = 42
+        self.RNG = np.random.default_rng(seed=self.SEED)
+        self.stop_thread = False
+        self.degredation_factor = 1.0
 
         # Sensor Parameters
         rng = np.random.default_rng(42)
@@ -138,7 +139,22 @@ class Machine_Process_Pump_Sensor_Node(Node):
         Callback function for Control CMD subscription.
         Processes control commands for corrective/preventative actions.
         """
-        self.get_logger().info(f"Received Control Command: {json.dumps(msg.data, indent=2)}")#TODO: Implement control cmd in due time.&& check sent data format.
+        control_msg = json.loads(msg.data)
+        self.get_logger().info(f"Received Control Command")
+        command = control_msg.get("command", "NORMAL_OPERATION")
+        if command == "SHUTDOWN":
+            self.get_logger().info(f"Received SHUTDOWN command. Stopping current task.")
+            self.stop_thread = True
+            if self.production_timer:
+                self.production_timer.cancel()
+                self.production_timer = None
+        elif command == "NORMAL_OPERATION":
+            self.get_logger().info(f"Received NORMAL_OPERATION command. Continuing operation.")
+        elif command == "SLOW_DOWN":
+            self.get_logger().info(f"Received SLOW_DOWN command. Slowing down operation.")
+            self.degredation_factor *= 0.9  # slowing down degradation by 10%
+        else:
+            self.get_logger().warning(f"Unknown command received: {command}")
 
     def generate_cycle(self, total_rul: int, rng: np.random.Generator):
         """
@@ -158,15 +174,15 @@ class Machine_Process_Pump_Sensor_Node(Node):
                                 )
         vibration = (
                         self.base_vib
-                        + (self.failure_vib - self.base_vib) * (fraction ** 2) * critical_boost
+                        + (self.failure_vib - self.base_vib) * (fraction ** 2) * critical_boost * self.degredation_factor
                         + rng.normal(0.0, self.vib_noise_scale * (1.0 + fraction), size=1)
                     )[0]
         temp_motor = (
-                        self.base_temp + self.k_temp * t * critical_boost
+                        self.base_temp + self.k_temp * t * critical_boost * self.degredation_factor
                         + rng.normal(0.0, self.temp_noise_scale, size=1)
                     )[0]
         pressure = (
-                        self.base_pressure - self.k_pressure * t * critical_boost
+                        self.base_pressure - self.k_pressure * t * critical_boost * self.degredation_factor
                         + rng.normal(0.0, self.pressure_noise_scale * (1.0 + 0.5 * fraction), size=1)
                     )[0]
         vib_motor = (
@@ -232,6 +248,8 @@ class Machine_Process_Pump_Sensor_Node(Node):
                     self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
                     #TODO: Publish failure status in due time at this line. 
                     break
+
+                if self.stop_thread: break
                 
                 self.publish_generated_data()
                 self.cycles_done += 1

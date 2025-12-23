@@ -16,11 +16,11 @@ Publishes status to Production_Log Topic.
 
 from std_msgs.msg import String
 from rclpy.node import Node
-from typing import Dict, Any
+from typing import Dict
+from typing import Any
 import rclpy
 import json
-import time
-import os
+
 
 class Job_Scheduler_Node(Node):
     """ROS2 Node for generating job orders to the production system."""

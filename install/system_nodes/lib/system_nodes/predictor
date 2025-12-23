@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/canozkan/Capstone_Project/venv/bin/python3.12
 # EASY-INSTALL-ENTRY-SCRIPT: 'system-nodes','console_scripts','predictor'
 import re
 import sys

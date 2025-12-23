@@ -14,18 +14,13 @@ Subscribes to Sensors topic for raw data input.
 Publishes selected job order to Predictions Topic. 
 """
 from system_nodes.prediction_handler import process_pump_prediction_handler as pp_handler
-
 from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
 from rclpy.node import Node
-
-import warnings
-import pandas as pd
-import numpy as np
 import rclpy
 import json
 import os
-import math
+
 
 
 class Predictor_Node(Node):
