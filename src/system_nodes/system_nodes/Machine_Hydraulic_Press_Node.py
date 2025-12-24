@@ -453,7 +453,7 @@ class Machine_Hydraulic_Press_Node(Node):
         self.get_logger().info(f"FAST simulation started for {self.cycles_to_run} cycles.")
         
         try:
-            for i in range(self.cycles_to_run):
+            for _ in range(self.cycles_to_run):
                 # In FAST mode, just loop and publish
                 current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
                 if current_rul <= 0:

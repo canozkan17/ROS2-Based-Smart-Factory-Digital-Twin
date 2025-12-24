@@ -19,6 +19,7 @@ import threading
 import random
 import rclpy
 import json
+import time
 
 
 class Machine_Process_Pump_Sensor_Node(Node):
@@ -41,6 +42,8 @@ class Machine_Process_Pump_Sensor_Node(Node):
         # Publisher for Sensors data
         self.publisher_sensors = self.create_publisher(String, "Sensors/process_pump", 10)
         
+        # Publisher for maintenance feedback 
+        self.publisher_maintenance_feedback = self.create_publisher(String, "Maintenance_Feedback/process_pump", 10)
             
         self.get_logger().info("Real degradation and noise patterns loaded.")
 
@@ -60,13 +63,16 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.cycles_to_run = 0
         self.cycles_done = 0
 
+        self.in_maintenance = False
+        self.control_cmd = "NORMAL_OPERATION"
+        self.maintenance_time_remaining = 0
+
 
         # Defaults
         np.random.seed(42)
         random.seed(42) 
         self.SEED = 42
         self.RNG = np.random.default_rng(seed=self.SEED)
-        self.stop_thread = False
         self.degredation_factor = 1.0
 
         # Sensor Parameters
@@ -141,21 +147,75 @@ class Machine_Process_Pump_Sensor_Node(Node):
         """
         control_msg = json.loads(msg.data)
         self.get_logger().info(f"Received Control Command")
+
+        # Extract control command and recovery time from the message
         command = control_msg.get("command", "NORMAL_OPERATION")
+        self.maintenance_cycles_remaining = control_msg.get("recovery_time_min", 0)
+
         if command == "SHUTDOWN":
             self.get_logger().info(f"Received SHUTDOWN command. Stopping current task.")
-            self.stop_thread = True
+            self.control_cmd = "SHUTDOWN"
+            self.in_maintenance = True
             if self.production_timer:
                 self.production_timer.cancel()
                 self.production_timer = None
-        elif command == "NORMAL_OPERATION":
-            self.get_logger().info(f"Received NORMAL_OPERATION command. Continuing operation.")
+
         elif command == "SLOW_DOWN":
+            self.control_cmd = "SLOW_DOWN"
             self.get_logger().info(f"Received SLOW_DOWN command. Slowing down operation.")
             self.degredation_factor *= 0.9  # slowing down degradation by 10%
+        
+        
+        elif command == "NORMAL_OPERATION":
+            self.get_logger().info(f"Received NORMAL_OPERATION command. Continuing operation.")
         else:
             self.get_logger().warning(f"Unknown command received: {command}")
 
+    def maintenance_timer(self):
+        """
+        Handles maintenance cycles when in maintenance mode.
+        In REALTIME mode, sets a timer for maintenance duration.
+        In FAST mode, decrements maintenance cycles immediately - causing friction of waiting for maintenance to finish thus simulating.
+        """
+        if not self.in_maintenance:
+            return
+
+        if self.simulation_mode == "REALTIME":
+            self.get_logger().info(
+                f"REALTIME maintenance started for {self.maintenance_cycles_remaining} cycles"
+            )
+
+            self.maintenance_realtime_timer = self.create_timer(
+                self.maintenance_cycles_remaining * 60.0,
+                self.finish_maintenance,
+                callback_group=None
+            )
+
+        elif self.simulation_mode == "FAST":
+            while self.maintenance_cycles_remaining > 0:
+                self.maintenance_cycles_remaining -= 1
+            self.finish_maintenance()
+    
+    def finish_maintenance(self):
+        self.degredation_factor = 1.0
+        self.in_maintenance = False
+        self.maintenance_cycles_remaining = 0
+
+        self.cycles_done = 0
+        self.control_cmd = "NORMAL_OPERATION"
+        self.current_task = {}
+
+        # MAINTENANCE_FEEDBACK
+        msg = String()
+        msg.data = json.dumps({
+                                    "machine": "process_pump",
+                                    "status": "READY"
+                                })
+        
+        self.publisher_maintenance_feedback.publish(msg) 
+
+        self.get_logger().info("Maintenance completed. Machine READY.")
+            
     def generate_cycle(self, total_rul: int, rng: np.random.Generator):
         """
         Generate synthetic sensor data for a single pump cycle until failure.
@@ -222,7 +282,16 @@ class Machine_Process_Pump_Sensor_Node(Node):
             if self.production_timer:
                 self.production_timer.cancel()
                 self.production_timer = None 
-            
+            if self.in_maintenance:
+                self.maintenance_timer()
+            return
+        
+        if self.control_cmd == "SHUTDOWN":
+            self.get_logger().info(f"REALTIME simulation stopped due to SHUTDOWN command at cycle {self.total_ran_cycles}.")
+            if self.production_timer:
+                self.production_timer.cancel()
+                self.production_timer = None
+                self.maintenance_timer()
             return
 
         # If not completed, run one cycle
@@ -248,11 +317,19 @@ class Machine_Process_Pump_Sensor_Node(Node):
                     self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
                     #TODO: Publish failure status in due time at this line. 
                     break
-
-                if self.stop_thread: break
                 
+                if self.control_cmd == "SHUTDOWN":
+                    self.get_logger().info(f"FAST simulation stopped due to SHUTDOWN command at cycle {self.total_ran_cycles}.")
+                    break
+
                 self.publish_generated_data()
                 self.cycles_done += 1
+            
+            if self.in_maintenance:
+                if self.control_cmd == "SLOW_DOWN":
+                    self.get_logger().info(f"FAST simulation stopped due to SLOW_DOWN command")
+                self.maintenance_timer()
+            
                         
         except Exception as e:
             self.get_logger().error(f"Error during FAST simulation: {e}")

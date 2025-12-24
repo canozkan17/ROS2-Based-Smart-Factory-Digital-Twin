@@ -34,11 +34,19 @@ class Job_Scheduler_Node(Node):
         
         # Subscription to User Input
         self.subscription_user_input = self.create_subscription(String, 'User_Input', self.listener_user_input_callback, 10)        
-        # Subscription to Maintenance Queue
+        # Subscription to Maintenance Queue from Controller_Node
         self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_maintenance_queue_callback, 10)
         # Subscription to Completed
         self.subscription_completed = self.create_subscription(String, 'Completed', self.listener_completed_callback, 10)
-        
+
+        # Subscription to Maintenance Feedback
+        self.subscription_maintenance_feedback = {
+                                                    self.create_subscription(String, 'Maintenance_Feedback/process_pump', self.listener_maintenance_feedback_callback, 10)
+                                                }
+
+
+
+
         # Publisher for Job Orders data
         self.publisher_job_orders = self.create_publisher(String, "Job_Orders", 10)
         # Publisher for Production Log status
@@ -53,10 +61,13 @@ class Job_Scheduler_Node(Node):
         self.pending_operations = []
         self.completed_operations = set()
         self.completed_jobs = set()
+        self.maintenance_queue_details = {}
     
         # Control flags
         self.process_finished = False
         self.user_input_received = False
+        self.maintenance_required = False
+        self.maintenance_completed = False
         
         # Set-up logs
         self.get_logger().info("Job Scheduler node ready!")
@@ -187,8 +198,9 @@ class Job_Scheduler_Node(Node):
         """
         if machine_id in self.running_operations:
             return False
-        else:
-            return True
+        if machine_id in self.maintenance_queue_details:
+            return False
+        return True
     
     def listener_user_input_callback(self, msg: String):
         """
@@ -209,20 +221,37 @@ class Job_Scheduler_Node(Node):
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    # Callback for maintenance queue                                                            !! REMAINING TODO !!
+    # Callback for maintenance queue from Controller_Node
     def listener_maintenance_queue_callback(self, msg: String):
         """
         Callback function for Maintenance Queue subscription.
         Re-organizes job_orders according to maintenance requirements.
         """
-        self.get_logger().info(f"Received Maintenance Queue item: {msg.data}")
-        
-        # Simulate job order re-organization                                                    !! REMAINING TODO !!
-        job_order = String()
-        job_order.data = f"Job Order: {msg.data}"
-        
-        self.publisher_job_orders.publish(job_order)
-        self.get_logger().info(f"Published Job Order: {job_order.data}")
+        data = json.loads(msg.data)
+        machine = data["machine"]
+
+        self.maintenance_queue_details[machine] = data
+        self.get_logger().info(f"{machine} added to maintenance queue")
+        self.maintenance_required = True
+        self.maintenance_completed = False
+        self.schedule_conducter()
+    
+    # Callback for maintenance feedback from Machines
+    def listener_maintenance_feedback_callback(self, msg: String):
+        """
+        Callback function for Maintenance Feedback subscription.
+        Processes maintenance completion feedback from machines.
+        """
+        feedback_data = json.loads(msg.data)
+        machine = feedback_data["machine"]
+        status = feedback_data["status"]
+
+        if status == "READY" and machine in self.maintenance_queue_details:
+            self.maintenance_required = False
+            self.maintenance_completed = True
+            self.get_logger().info(f"{machine} maintenance completed and removed from maintenance queue")
+            self.schedule_conducter()
+
     # Callback for Completed
     def listener_completed_callback(self, msg: String):
         """
@@ -256,10 +285,7 @@ class Job_Scheduler_Node(Node):
         Control job_order and process_order lists.
         Conduct publishing of job orders based on completion status.
         """
-
-        # !! TODO : will be updated according to maintenance queue logic in due time!!
-        
-        
+        # Handling user input received logic
         if self.user_input_received:
             ready_tasks = self.load_balancer()
             if ready_tasks:
@@ -270,6 +296,43 @@ class Job_Scheduler_Node(Node):
                     self.running_operations[task['machine']] = task
             self.user_input_received = False
         
+
+        # Handling maintenance required logic
+        if self.maintenance_required:
+            # update running operations with maintenance info
+            for machine, info in list(self.maintenance_queue_details.items()):
+                if machine in self.running_operations:
+                    task = self.running_operations[machine]
+                    task["status"] = "MAINTENANCE"
+                    task["task_time"] = info["remaining_cycles"]
+                    # move the task back to pending operations
+                    self.pending_operations.append(task)
+                    del self.running_operations[machine] # remove from running operations
+            
+            # reset flag
+            self.maintenance_required = False
+            ready_tasks = self.load_balancer()
+            
+            if ready_tasks:
+                self.publish_job_orders(ready_tasks)
+                # remove the published task from pending operations and add to running operations
+                for task in ready_tasks:
+                    self.pending_operations.remove(task)
+                    self.running_operations[task['machine']] = task
+        
+        # Handling maintenance completed logic
+        if self.maintenance_completed:
+            # remove machine from maintenance queue details
+            for machine in list(self.maintenance_queue_details.keys()):
+                del self.maintenance_queue_details[machine]
+            self.maintenance_completed = False
+            ready_tasks = self.load_balancer()
+            if ready_tasks:
+                self.publish_job_orders(ready_tasks)
+                # remove the published task from pending operations and add to running operations
+                for task in ready_tasks:
+                    self.pending_operations.remove(task)
+                    self.running_operations[task['machine']] = task
         
         # following the COMPLETION of process
         if self.process_finished:
@@ -302,20 +365,20 @@ class Job_Scheduler_Node(Node):
                     self.job_order.remove(order)
                     self.get_logger().info(f"Job {order['job_ID']} fully COMPLETED and removed.")
 
-    # Load Balancer Function
-    # TODO: Expand in maintenance queue callback
     def load_balancer(self):
         """
         Load balancer to manage job scheduling.
         Sorts task orders by priority, total cycle count, and arrival time (FIFO).
         """
         priority_map = {"high": 0, "medium": 1, "low": 2}
-        ready_tasks = [t for t in self.pending_operations if t['depending_on'] is None and self.is_machine_available(t['machine'])]
+        ready_tasks = [t for t in self.pending_operations if t['depending_on'] is None 
+                       and self.is_machine_available(t['machine'])
+                       ]
         
         ready_tasks.sort(
                             key=lambda t: (
                                             priority_map.get(t['priority'], 3), # Sort by primarily priority (high to low)
-                                            t['task_time'],                    # Sort by task_time (lower is higher priority)(SJF)
+                                            t['task_time'],                     # Sort by task_time (lower is higher priority)(SJF)
                                             int(t['job_ID'][-3:])               # Sort by arrival time (FIFO based on job_ID suffix)
                                           )
                         )

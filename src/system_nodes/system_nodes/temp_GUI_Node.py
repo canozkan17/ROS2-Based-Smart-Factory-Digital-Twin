@@ -44,10 +44,10 @@ class temp_GUI_Node(Node):
         self.subscription_job_order = self.create_subscription(String, 'Job_Orders', self.listener_callback_job_orders, 10)
     
         # Subscription to Control CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd = self.create_subscription(String, 'control_CMD', self.listener_callback_control_cmd, 10)
     
         # Subscription to Maintenance Queue
-        self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_callback_maintenance_queue, 10)
+        self.subscription_maintenance_queue = self.create_subscription(String, 'maintenance_queue', self.listener_callback_maintenance_queue, 10)
 
         # Publisher for Sensors data
         self.publisher_user_input = self.create_publisher(String, "User_Input", 10)

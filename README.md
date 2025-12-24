@@ -12,6 +12,8 @@ The framework is built on a decoupled ROS2 architecture, ensuring horizontal sca
 - **Inference (Predictor Node):** Multi-stage ONNX-optimized pipeline performing feature engineering on a 60-cycle sliding window for real-time Edge inference.
 - **Action (Controller Node):** State-machine logic implementing Hysteresis & State Escalation (Normal -> Slow Down -> Shutdown) to ensure system stability.
 
+- **Maintenance (Maintenance Queue):** `Controller_Node` publishes maintenance schedules to a `Maintenance_Queue` topic when predictions indicate required intervention. `Job_Scheduler_Node` subscribes to this queue and reorders or pauses jobs to accommodate maintenance windows, while machines publish maintenance feedback (e.g., `Maintenance_Feedback/<machine>`) when maintenance is complete.
+
 ![Project Architecture](Data_Communication_Flow.png)
 ---
 
@@ -63,16 +65,16 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
 - **Machine_Hydraulic_Press_Node**  
   Simulates synthetic sensor data for the hydraulic press. Implements realistic degradation and process physics. See [Machine_Hydraulic_Press_Node.py](src/system_nodes/system_nodes/Machine_Hydraulic_Press_Node.py).
 - **Machine_Process_Pump_Node**  
-  Simulates synthetic sensor data for the process pump, including load and degradation effects. See [Machine_Process_Pump_Node.py](src/system_nodes/system_nodes/Machine_Process_Pump_Node.py).
+  Simulates synthetic sensor data for the process pump, including load and degradation effects. The process pump node listens for `Job_Orders` and `control_CMD/process_pump` and publishes sensor streams; it also publishes maintenance feedback to `Maintenance_Feedback/process_pump` when maintenance completes. See [Machine_Process_Pump_Node.py](src/system_nodes/system_nodes/Machine_Process_Pump_Node.py).
 - **Job_Scheduler_Node**  
-  Receives job orders, splits them into tasks, manages dependencies, and publishes jobs to machine nodes. See [Job_Scheduler_Node.py](src/system_nodes/system_nodes/Job_Scheduler_Node.py).
+  Receives job orders, splits them into tasks, manages dependencies, and publishes jobs to machine nodes. `Job_Scheduler_Node` subscribes to `Maintenance_Queue` and `Maintenance_Feedback/*` topics so it can pause, reorder, or resume tasks based on maintenance windows published by the controller or machines. See [Job_Scheduler_Node.py](src/system_nodes/system_nodes/Job_Scheduler_Node.py).
 - **Predictor_Node**  
   To meet industrial reliability standards, the Predictor_Node employs a hierarchical inference strategy:
     - **Stage 1 (Classification):** Detects if the asset has entered a critical degradation phase.
     - **Stage 2 (Specialized Regression):** Swaps between "Base" and "Ultra-Critical" regression models to maximize accuracy as the RUL approaches zero.
     - **Reliability Fallback:** Primarily utilizes ONNX Runtime for low-latency Edge inference, with an automated fallback to XGBoost to ensure system availability. See [Predictor_Node.py](src/system_nodes/system_nodes/Predictor_Node.py).
 - **Controller_Node**  
-    Listens to predictions and issues corrective/preventative actions:
+  Listens to predictions and issues corrective/preventative actions. When an action requires downtime or intervention, the controller publishes a maintenance schedule to `Maintenance_Queue` so the scheduler can pause or reorder work. It issues the following commands:
     - `SLOW_DOWN`: Slows down machine via `control_CMD`.
     - `SHUTDOWN`: Temporarily halts production for maintenance.
     - `NORMAL_OPERATION`: Resumes or continues normal operation. See [Controller_Node.py](src/system_nodes/system_nodes/Controller_Node.py).
@@ -97,7 +99,7 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
 
 1. **Clone the repository:**
    ```bash
-   git clone <repo_url>
+   git clone https://github.com/canozkan17/ROS2-Based-Smart-Factory-Digital-Twin
    cd Capstone_Project
    ```
 
@@ -139,7 +141,7 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
    - predictor
    - controller
 
-7. **Use the temp GUI node:**
+7. **Use the temp GUI node to trigger the "production":**
    ```bash
    ros2 run system_nodes temp_gui
    ```

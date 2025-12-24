@@ -14,6 +14,7 @@ from std_msgs.msg import String
 from rclpy.node import Node
 import rclpy
 import json
+import random
 
 
 class Controller_Node(Node):
@@ -31,17 +32,20 @@ class Controller_Node(Node):
         self.subscription_process_pump_node = self.create_subscription(String, 'Predictions/process_pump', self.listener_process_pump_predictions_callback, 10)    
         
         # Subscription to Job_Scheduler node  
-        self.subscription_job_scheduler_node = self.create_subscription(String, 'Job_Scheduler', self.listener_job_scheduler_callback, 10)    
+        self.subscription_job_scheduler_node = self.create_subscription(String, 'Job_Orders', self.listener_job_scheduler_callback, 10)    
 
         # Publishers for predictions
         self.control_cmd_publishers = {
                                         "hydraulic_press": self.create_publisher(String, "control_CMD/hydraulic_press", 10),
                                         "process_pump": self.create_publisher(String, "control_CMD/process_pump", 10)
                                     }
+        # Publisher for maintenance queue
+        self.maintenance_publisher = self.create_publisher(String, "Maintenance_Queue", 10)
+
         # Machine Status Control
-        # NORMAL_OPERATION: 1 - default state
-        # SLOW_DOWN: 2 - slow down machine operation to extend RUL
-        # SHUTDOWN: 3 - shut down machine for maintenance
+            # NORMAL_OPERATION: 1 - default state
+            # SLOW_DOWN: 2 - slow down machine operation to extend RUL
+            # SHUTDOWN: 3 - shut down machine for maintenance
         self.machine_status = {
                                     "hydraulic_press": 1,
                                     "process_pump": 1
@@ -131,8 +135,6 @@ class Controller_Node(Node):
 
         self.publish_control_CMD(rul, cycle, command, machine)
 
-            
-
     def publish_control_CMD(self, rul:float, cycle:int, command:str, machine=None):
         """
         Controls if the machine command has been changed from Normal_Operation to another state.
@@ -142,24 +144,76 @@ class Controller_Node(Node):
             self.get_logger().error(f"Invalid machine type for control command publishing: {machine}")
             return
         
+        
+        current_state = self.machine_status[machine]
+        new_state = 1 if command == "NORMAL_OPERATION" else (2 if command == "SLOW_DOWN" else 3)
+
         # Check if the state is escalating or not
-        if self.machine_status[machine] <= 1:
-            current_state = self.machine_status[machine]
-            new_state = 1 if command == "NORMAL_OPERATION" else (2 if command == "SLOW_DOWN" else 3)
-
         # Only publish if the machine state is escalating
-            if new_state > current_state:
-                self.machine_status[machine] = new_state
-                control_msg = String()
-                control_msg.data = json.dumps({
-                                                "machine": machine,
-                                                "cycle": cycle,
-                                                "rul": rul,
-                                                "command": command
-                                            })
-                self.control_cmd_publishers[machine].publish(control_msg)
-                self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}")
+        if new_state > current_state:
 
+            self.machine_status[machine] = new_state
+            recovery_time_min, remaining_cycles = self.compute_maintenance_schedule(machine)
+
+            control_msg = String()
+            control_msg.data = json.dumps({
+                                            "machine": machine,
+                                            "cycle": cycle,
+                                            "rul": rul,
+                                            "command": command,
+                                            "recovery_time_min": recovery_time_min
+                                        })
+            self.control_cmd_publishers[machine].publish(control_msg)                       # informs the machine
+            self.publish_maintenance_schedule(machine, recovery_time_min, remaining_cycles) # informs the job scheduler
+            self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}")
+            # trigger the maintenance scheduling
+
+    def compute_maintenance_schedule(self, machine=None):
+        """
+        Compute maintenance schedule based on machine type.
+        """
+        recovery_time_min = 0
+        remaining_cycles = 0
+
+        # additional control layer just in case.
+        if self.machine_status[machine] > 1:  # type: ignore
+            if machine == "process_pump":
+                remaining_cycles = self.process_pump_total_cycles - self.process_pump_current_cycles
+                if self.machine_status[machine] == 2:           # SLOW_DOWN
+                    recovery_time_hrs = random.randint(1, 3)    # Random recovery time between 1 to 3 hours
+                    recovery_time_min = recovery_time_hrs * 60  # Convert to minutes aka cycles in the system
+                
+                elif self.machine_status[machine] == 3:         # SHUTDOWN
+                    recovery_time_hrs = random.randint(4, 12)   # Random recovery time between 4 to 12 hours
+                    recovery_time_min = recovery_time_hrs * 60  # Convert to minutes aka cycles in the system
+            
+            elif machine == "hydraulic_press":
+                if self.machine_status[machine] == 2:
+                    recovery_time_hrs = random.randint(2, 6)
+                    recovery_time_min = recovery_time_hrs * 60
+                
+                elif self.machine_status[machine] == 3:
+                    recovery_time_hrs = random.randint(8, 24)
+                    recovery_time_min = recovery_time_hrs * 60
+        
+        return recovery_time_min, remaining_cycles
+
+                
+    def publish_maintenance_schedule(self, machine:str, recovery_time_min:int, remaining_cycles:int=0):
+        """
+        Publish maintenance schedule to Maintenance_Queue topic.
+        """
+
+        maintenance_msg = String()
+        maintenance_msg.data = json.dumps({
+                                            "machine": machine,
+                                            "recovery_time_min": recovery_time_min,
+                                            "remaining_cycles": remaining_cycles
+                                        })
+        self.maintenance_publisher.publish(maintenance_msg)
+        self.get_logger().info(f"Published Maintenance Schedule for {machine}: Recovery Time={recovery_time_min} minutes/cycles")
+                
+                
 def main(args=None):
     """
     Main entry point for the Predictor_Node.
