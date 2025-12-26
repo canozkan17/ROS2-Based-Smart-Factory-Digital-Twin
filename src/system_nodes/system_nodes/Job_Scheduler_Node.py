@@ -20,6 +20,7 @@ from typing import Dict
 from typing import Any
 import rclpy
 import json
+import math
 
 
 class Job_Scheduler_Node(Node):
@@ -116,7 +117,7 @@ class Job_Scheduler_Node(Node):
         Calculate total time required for a process based on produce amount and material.
         """
         
-        process_time_map = {
+        process_time_map_in_seconds = {
                             "bending": {
                                             "DC01_ZE": 30,
                                             "Stainless_304": 45,
@@ -153,14 +154,14 @@ class Job_Scheduler_Node(Node):
                                                 "Aluminium_6082_T6": 60
                                             }
                         }
-        if process_name in process_time_map and material in process_time_map[process_name]:
-            time_per_part = process_time_map[process_name][material]
-            task_time = produce_amount * time_per_part
+        if process_name in process_time_map_in_seconds and material in process_time_map_in_seconds[process_name]:
+            time_per_part = process_time_map_in_seconds[process_name][material]
+            task_time_min = math.ceil((produce_amount * time_per_part) / 60)  # Convert to minutes
         else:
             self.get_logger().error(f"Unknown process '{process_name}' or material '{material}' for time calculation. Falling back to default time of 45.")
-            task_time = 45 * produce_amount
+            task_time_min = 45 * produce_amount
             
-        return task_time
+        return task_time_min
         
     def add_new_job(self, user_input_data: Dict[str, Any]):
         # Generate unique job ID
@@ -177,13 +178,12 @@ class Job_Scheduler_Node(Node):
                         "process": firs_process,
                         "machine": self.select_machine_for_process(firs_process),
                         "depending_on": None if i == 0 else self.pending_operations[-1]['task_ID'],  # None for first process, else previous process task_ID
-                        "task_time": self.task_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material']),
+                        "task_time_min": self.task_time_calculator(user_input_data['produce_amount'], firs_process, user_input_data['material']),
                         "part_weight_kg": user_input_data['part_weight_kg'],
                         "part_thickness_mm": user_input_data['part_thickness_mm'],
                         "part_width_mm": user_input_data['part_width_mm'],
                         "surface_quality_mm": user_input_data["surface_quality_mm"],
                         "tolerance_mm": user_input_data["tolerance_mm"],
-                        "produce_amount": user_input_data["produce_amount"],
                         "produce_amount": user_input_data["produce_amount"],
                         "material": user_input_data["material"],
                         "status": "PENDING"
@@ -249,6 +249,7 @@ class Job_Scheduler_Node(Node):
         if status == "READY" and machine in self.maintenance_queue_details:
             self.maintenance_required = False
             self.maintenance_completed = True
+            
             self.get_logger().info(f"{machine} maintenance completed and removed from maintenance queue")
             self.schedule_conducter()
 
@@ -304,7 +305,7 @@ class Job_Scheduler_Node(Node):
                 if machine in self.running_operations:
                     task = self.running_operations[machine]
                     task["status"] = "MAINTENANCE"
-                    task["task_time"] = info["remaining_cycles"]
+                    task["task_time_min"] = info["remaining_min"]
                     # move the task back to pending operations
                     self.pending_operations.append(task)
                     del self.running_operations[machine] # remove from running operations
@@ -378,7 +379,7 @@ class Job_Scheduler_Node(Node):
         ready_tasks.sort(
                             key=lambda t: (
                                             priority_map.get(t['priority'], 3), # Sort by primarily priority (high to low)
-                                            t['task_time'],                     # Sort by task_time (lower is higher priority)(SJF)
+                                            t['task_time_min'],                     # Sort by task_time_min (lower is higher priority)(SJF)
                                             int(t['job_ID'][-3:])               # Sort by arrival time (FIFO based on job_ID suffix)
                                           )
                         )

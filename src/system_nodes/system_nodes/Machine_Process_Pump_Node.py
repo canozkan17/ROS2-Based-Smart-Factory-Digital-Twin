@@ -65,7 +65,6 @@ class Machine_Process_Pump_Sensor_Node(Node):
 
         self.in_maintenance = False
         self.control_cmd = "NORMAL_OPERATION"
-        self.maintenance_time_remaining = 0
 
 
         # Defaults
@@ -110,12 +109,12 @@ class Machine_Process_Pump_Sensor_Node(Node):
                 if task['machine'] == 'hydraulic_press' and task['depending_on'] is None:
                     
                     self.current_task = task
-                    self.cycles_to_run = task['task_time']
+                    self.cycles_to_run = task['task_time_min']  # in minutes
                     
                     if self.cycles_to_run <= 0:
                         self.get_logger().warn("Task time is zero or negative. Skipping task.")
                         self.current_task = {}
-                        self.get_logger().error(f"Invalid or missing 'task_time' in job. Cannot start.")
+                        self.get_logger().error(f"Invalid or missing 'task_time_min' in job. Cannot start.")
                         return
 
                     self.get_logger().info(
@@ -186,14 +185,15 @@ class Machine_Process_Pump_Sensor_Node(Node):
             )
 
             self.maintenance_realtime_timer = self.create_timer(
-                self.maintenance_cycles_remaining * 60.0,
-                self.finish_maintenance,
-                callback_group=None
-            )
+                                                                    self.maintenance_cycles_remaining * 60.0,
+                                                                    self.finish_maintenance,
+                                                                    callback_group=None
+                                                                )
 
         elif self.simulation_mode == "FAST":
             while self.maintenance_cycles_remaining > 0:
                 self.maintenance_cycles_remaining -= 1
+                time.sleep(0.01)  # small sleep to simulate time passage
             self.finish_maintenance()
     
     def finish_maintenance(self):

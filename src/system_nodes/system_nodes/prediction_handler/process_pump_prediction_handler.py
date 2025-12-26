@@ -41,6 +41,13 @@ TEMP_MAX = 110.0
 PRESS_MIN = 4.0
 PRESS_MAX = 8.5
 
+# MODEL OUTPUT UNIT CONTRACT
+# System contract: RUL is published in minutes (1 cycle = 1 minute).
+# Training notebook: Stage-2A/2B regressors are trained on `current_rul` which is in minutes.
+# Keep everything consistent: treat all model outputs as minutes.
+STAGE_2A_OUTPUT_IS_HOURS = False
+STAGE_2B_OUTPUT_IS_HOURS = False
+
 def load_models_and_features():
     """
     Loads ONNX models as primary
@@ -88,52 +95,121 @@ def engineer_features(history):
     """
     if len(history) < 10:
         return None
-    
+
     entries = list(history)
-    last_entry = entries[-1]
-    
-    # physical limits check (based on training data)
-    vib_norm = (last_entry['vibration'] - VIB_MIN) / (VIB_MAX - VIB_MIN + 1e-6)
-    temp_norm = (last_entry['temp_motor'] - TEMP_MIN) / (TEMP_MAX - TEMP_MIN + 1e-6)
-    press_norm = (last_entry['pressure'] - PRESS_MIN) / (PRESS_MAX - PRESS_MIN + 1e-6)
+    last = entries[-1]
 
-    # Degradation Index (to catch the trend)
-    degradation_index = (vib_norm + temp_norm + (1 - press_norm)) / 3.0
-    
-    # Rolling Features
-    vibration_values = [entry['vibration'] for entry in entries]
-    temp_values = [entry['temp_motor'] for entry in entries]
-    
-    # standard deviation of last 20 (Volatility)
-    vib_std_20 = np.std(vibration_values[-20:]) if len(vibration_values) >= 20 else np.std(vibration_values)
-    
-    # Slope calculation
-    def get_slope(data_list):
-        if len(data_list) < 5: return 0.0
-        y = np.array(data_list[-10:])
-        x = np.arange(len(y))
-        return np.polyfit(x, y, 1)[0]
+    # Notebook constants
+    window_short = 5
+    window_long = 20
+    sensors = ['vibration', 'temp_motor', 'pressure', 'vib_motor']
 
-    # Feature set expected by the model
+    def _roll_mean(values: np.ndarray, window: int) -> np.ndarray:
+        out = np.empty_like(values, dtype=float)
+        for i in range(len(values)):
+            start = max(0, i - window + 1)
+            out[i] = float(np.mean(values[start:i+1]))
+        return out
+
+    def _roll_std(values: np.ndarray, window: int, min_periods: int = 2) -> np.ndarray:
+        out = np.zeros(len(values), dtype=float)
+        for i in range(len(values)):
+            start = max(0, i - window + 1)
+            chunk = values[start:i+1]
+            if len(chunk) < min_periods:
+                out[i] = 0.0
+            else:
+                # pandas std() defaults to ddof=1
+                out[i] = float(np.std(chunk, ddof=1))
+        return out
+
+    def _diff(values: np.ndarray, periods: int) -> np.ndarray:
+        out = np.zeros(len(values), dtype=float)
+        for i in range(len(values)):
+            if i - periods >= 0:
+                out[i] = float(values[i] - values[i - periods])
+            else:
+                out[i] = 0.0
+        return out
+
+    series = {s: np.array([float(e[s]) for e in entries], dtype=float) for s in sensors}
+
+    roll_mean_5 = {s: _roll_mean(series[s], window_short) for s in sensors}
+    roll_mean_20 = {s: _roll_mean(series[s], window_long) for s in sensors}
+    roll_std_20 = {s: _roll_std(series[s], window_long, min_periods=2) for s in sensors}
+
+    # Deviation from long-term mean (notebook: raw - roll_mean_20)
+    dev_long = {s: (series[s] - roll_mean_20[s]) for s in sensors}
+
+    # Slope (notebook: diff of roll_mean_20 with period=20)
+    slope_20 = {s: _diff(roll_mean_20[s], window_long) for s in sensors}
+
+    # Acceleration (notebook: diff of slope_20 with period=5) for vibration & temp_motor
+    accel = {
+                'vibration': _diff(slope_20['vibration'], 5),
+                'temp_motor': _diff(slope_20['temp_motor'], 5),
+            }
+
+    # Volatility surge (notebook: roll_std_short(5) - roll_std_long(20))
+    roll_std_5 = {s: _roll_std(series[s], window_short, min_periods=2) for s in sensors}
+    volatility_surge = {s: (roll_std_5[s] - roll_std_20[s]) for s in sensors}
+
+    # Degradation index (notebook: normalized using global min/max)
+    vib_norm = (last['vibration'] - VIB_MIN) / (VIB_MAX - VIB_MIN + 1e-6)
+    temp_norm = (last['temp_motor'] - TEMP_MIN) / (TEMP_MAX - TEMP_MIN + 1e-6)
+    press_norm = (last['pressure'] - PRESS_MIN) / (PRESS_MAX - PRESS_MIN + 1e-6)
+    degradation_index = (vib_norm + temp_norm + (1.0 - press_norm)) / 3.0
+
+    # Coupling (notebook: vib_motor / vibration)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        coupling = float(last['vib_motor']) / (float(last['vibration']) + 1e-6)
+    if not np.isfinite(coupling):
+        coupling = 1.0
+    coupling = float(np.clip(coupling, 0.0, 10.0))
+
+    # Pressure stability (notebook: 1 / pressure_roll_std_20, 0 -> 1e-6)
+    pressure_std = float(roll_std_20['pressure'][-1])
+    if pressure_std == 0.0:
+        pressure_std = 1e-6
+    pressure_stability = 1.0 / pressure_std
+
     features = {
-                    "vibration": last_entry['vibration'],
-                    "temp_motor": last_entry['temp_motor'],
-                    "pressure": last_entry['pressure'],
-                    "degradation_index": degradation_index,
-                    "vibration_roll_std_20": vib_std_20,
-                    "temp_motor_slope_20": get_slope(temp_values),
-                    "vibration_volatility_surge": vib_std_20 / (np.mean(vibration_values) + 1e-6),
-                    "pressure_stability": np.std([e['pressure'] for e in entries[-10:]]),
-                    "vib_motor_dev_long": last_entry['vib_motor'] - np.mean([e['vib_motor'] for e in entries]),
-                    "vibration_dev_long": last_entry['vibration'] - np.mean(vibration_values),
-                    "motor_pump_coupling": last_entry['vibration'] / (last_entry['vib_motor'] + 1e-6)
+                    # Raw sensors
+                    'vibration': float(last['vibration']),
+                    'temp_motor': float(last['temp_motor']),
+                    'pressure': float(last['pressure']),
+
+                    # Core engineered
+                    'degradation_index': float(degradation_index),
+                    'motor_pump_coupling': float(coupling),
+                    'pressure_stability': float(pressure_stability),
+
+                    # Rolling std (20)
+                    'vibration_roll_std_20': float(roll_std_20['vibration'][-1]),
+                    'temp_motor_roll_std_20': float(roll_std_20['temp_motor'][-1]),
+                    'pressure_roll_std_20': float(roll_std_20['pressure'][-1]),
+
+                    # Dev long
+                    'vibration_dev_long': float(dev_long['vibration'][-1]),
+                    'temp_motor_dev_long': float(dev_long['temp_motor'][-1]),
+                    'vib_motor_dev_long': float(dev_long['vib_motor'][-1]),
+
+                    # Slope 20
+                    'temp_motor_slope_20': float(slope_20['temp_motor'][-1]),
+                    'pressure_slope_20': float(slope_20['pressure'][-1]),
+
+                    # Acceleration
+                    'temp_motor_acceleration': float(accel['temp_motor'][-1]),
+                    'vibration_acceleration': float(accel['vibration'][-1]),
+
+                    # Volatility surge
+                    'vibration_volatility_surge': float(volatility_surge['vibration'][-1]),
+                    'temp_motor_volatility_surge': float(volatility_surge['temp_motor'][-1]),
+                    'vib_motor_volatility_surge': float(volatility_surge['vib_motor'][-1]),
+                    'pressure_volatility_surge': float(volatility_surge['pressure'][-1]),
                 }
 
-    # Fill missing features with default (0.0)
-    input_vector = []
-    for feature_name in selected_features:
-        input_vector.append(features.get(feature_name, 0.0))
-        
+    input_vector = [float(features.get(feature_name, 0.0)) for feature_name in selected_features]
     return np.array([input_vector], dtype=np.float32)
     
 
@@ -145,6 +221,10 @@ def get_prediction(history):
         X_input = engineer_features(history)
         if X_input is None:
             return -1.0
+
+        stage = "BASE"
+        crit_prob = 0.0
+        is_critical = False
 
         if base_model_session is not None:
             # Stage 1: Critical classifier
@@ -159,7 +239,7 @@ def get_prediction(history):
 
             is_critical = crit_prob >= 0.30
 
-            # Stage 0: Base regressor
+            # Stage 0: Base regressor (minutes)
             base_input = base_model_session.get_inputs()[0].name
             rul_out = base_model_session.run(None, {base_input: X_input})[0]
             rul = float(np.squeeze(rul_out))                                                    # type: ignore
@@ -168,16 +248,20 @@ def get_prediction(history):
                 # Stage 2A
                 s2a_input = stg2a_regressor_session.get_inputs()[0].name                        # type: ignore
                 rul_short_out = stg2a_regressor_session.run(None, {s2a_input: X_input})[0]      # type: ignore
-                rul_short = float(np.squeeze(rul_short_out))                                    # type: ignore
+                rul_short_raw = float(np.squeeze(rul_short_out))                                # type: ignore
+                rul_short_min = rul_short_raw * 60.0 if STAGE_2A_OUTPUT_IS_HOURS else rul_short_raw
 
-                if rul_short < 1000:
-                    rul = rul_short
+                # Notebook routing: if Stage-1 says critical, use Stage-2A output.
+                rul = rul_short_min
+                stage = "STAGE_2A"
 
-                # Stage 2B
-                if rul_short <= 20:
-                    s2b_input = stg2b_regressor_session.get_inputs()[0].name                    # type: ignore
+                # Stage 2B (very short horizon)
+                if rul_short_min <= 20:
+                    s2b_input = stg2b_regressor_session.get_inputs()[0].name                # type: ignore
                     rul_vshort_out = stg2b_regressor_session.run(None, {s2b_input: X_input})[0] # type: ignore
-                    rul = float(np.squeeze(rul_vshort_out))                                     # type: ignore
+                    rul_vshort_raw = float(np.squeeze(rul_vshort_out))                      # type: ignore
+                    rul = rul_vshort_raw * 60.0 if STAGE_2B_OUTPUT_IS_HOURS else rul_vshort_raw
+                    stage = "STAGE_2B"
         
         else:
             # XGBoost fallback
@@ -186,12 +270,24 @@ def get_prediction(history):
             rul = float(base_model.predict(X_input)[0])                                         # type: ignore
 
             if is_critical:
-                rul_short = float(stg2a_regressor.predict(X_input)[0])                          # type: ignore
-                if rul_short < 100:
-                    rul = rul_short
-                if rul_short <= 20:
-                    rul = float(stg2b_regressor.predict(X_input)[0])                            # type: ignore
-        return max(0.0, float(rul))
+                rul_short_raw = float(stg2a_regressor.predict(X_input)[0])                      # type: ignore
+                rul_short_min = rul_short_raw * 60.0 if STAGE_2A_OUTPUT_IS_HOURS else rul_short_raw
+
+                rul = rul_short_min
+                stage = "STAGE_2A"
+
+                if rul_short_min <= 20:
+                    rul_vshort_raw = float(stg2b_regressor.predict(X_input)[0])             # type: ignore
+                    rul = rul_vshort_raw * 60.0 if STAGE_2B_OUTPUT_IS_HOURS else rul_vshort_raw
+                    stage = "STAGE_2B"
+
+        return {
+            "rul_min": float(np.clip(float(rul), 0.0, 48000.0)),
+            "stage": stage,
+            "is_critical": is_critical,
+            "crit_prob": float(crit_prob),
+            "unit": "minutes"
+        }
 
     except Exception as e:
         print(f"Prediction Error: {e}")

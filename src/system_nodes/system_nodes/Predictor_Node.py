@@ -74,27 +74,40 @@ class Predictor_Node(Node):
             received_data = json.loads(msg.data)
             self.get_logger().info(f"Received Process_Pump message")
 
+            if received_data.get("cycle") == 0:
+                self.pump_history = []          # reset history at new run / after maintenance
+                self.get_logger().info("Reset Process_Pump history for new run.")
+
             # update history and keep only last max_pump_history_length entries
             self.pump_history.append(received_data)
 
             if len(self.pump_history) < self.pump_rolling_window:
-                self.get_logger().warning(f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}")
+                self.get_logger().warning(
+                                            f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}"
+                                        )
                 return
 
             if len(self.pump_history) > 1000:       # for RPI memory limits
                 self.pump_history.pop(0)
-            
+                
             # Wait until enough history is collected
             if len(self.pump_history) < self.pump_rolling_window:
                 self.get_logger().warning(f"Not enough history for Process_Pump: {len(self.pump_history)}/{self.pump_rolling_window}. ")
                 return None
-            
+                
             # WHERE MAGIC HAPPENS
-            self.predicted_rul_process_pump = pp_handler.get_prediction(self.pump_history)
+            prediction_result = pp_handler.get_prediction(self.pump_history)
+
+            if isinstance(prediction_result, dict):
+                self.predicted_rul_process_pump = prediction_result.get("rul_min")
+                prediction_payload = prediction_result
+            else:
+                self.get_logger().error("Invalid prediction output format")
+                return
 
             self.publish_generated_data(
-                                            self.predicted_rul_process_pump, 
-                                            cycle=received_data.get("cycle", -1), 
+                                            prediction_payload = prediction_payload,
+                                            cycle=received_data.get("cycle", -1),
                                             machine="process_pump"
                                         )
 
@@ -103,22 +116,26 @@ class Predictor_Node(Node):
     
 
 
-    def publish_generated_data(self, rul:float, cycle:int, machine=None):
+    def publish_generated_data(self, prediction_payload, cycle:int, machine=None):
         """
         Generic publisher for RUL predictions.
         Selects the correct publisher based on machine type.
         
         """
-        if machine is not None and rul is not None and cycle is not None:
+        if machine is not None and prediction_payload is not None and cycle is not None:
 
             prediction_msg = String()
             prediction_msg.data = json.dumps({
-                                            "machine": machine,
-                                            "cycle": cycle,
-                                            "rul": rul
-                                        })
+                                                "machine": machine,
+                                                "cycle": cycle,
+                                                "rul": prediction_payload
+                                            })
             self.prediction_publishers[machine].publish(prediction_msg)
-            self.get_logger().info(f"Published RUL prediction for {machine} at cycle {cycle}: RUL={rul}")
+            self.get_logger().info(
+                                        f"Published RUL prediction for {machine} at cycle {cycle}: "
+                                        f"RUL={prediction_payload.get('rul_min', 'N/A'):.2f} min, "
+                                        f"stage={prediction_payload.get('stage', 'N/A')}"
+                                    )
 
 def main(args=None):
     """
