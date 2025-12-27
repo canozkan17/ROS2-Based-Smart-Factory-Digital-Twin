@@ -65,18 +65,23 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.SEED = 42
         self.degredation_factor = 1.0
 
+        # =======================================================================
+        # CRITICAL: RNG sequence must match training data generator exactly!
         # Training generator (generate_pump_data.py) uses this order:
         #   1. RNG.integers(30000, 48001) -> total_rul
         #   2. RNG.uniform(0.02, 0.3) -> base_vib
-        #   3. RNG.uniform(2.0, 6.0) -> failure_vib       
+        #   3. RNG.uniform(2.0, 6.0) -> failure_vib
+        #   ... and so on
+        # If we skip step 1, all subsequent parameters will be WRONG!
+        # =======================================================================
         rng = np.random.default_rng(self.SEED)
         
-        # total_rul (MUST be first to sync RNG state with training)
+        # Step 1: total_rul (MUST be first to sync RNG state with training)
         self.total_lifetime_minutes = int(rng.integers(30000, 48001))  # matches training
         self.max_lifetime = self.total_lifetime_minutes / 60.0  # convert to hours
         self.get_logger().info(f"Process_Pump initialized with max lifetime: {self.max_lifetime:.1f} hours ({self.total_lifetime_minutes} min)")
 
-        # Sensor parameters (same order as generate_pump_data.py)
+        # Step 2-11: Sensor parameters (same order as generate_pump_data.py)
         self.base_vib = rng.uniform(0.02, 0.3)
         self.failure_vib = rng.uniform(2.0, 6.0)
         self.vib_noise_scale = rng.uniform(0.01, 0.1)
@@ -372,7 +377,12 @@ class Machine_Process_Pump_Sensor_Node(Node):
         msg = String()
         msg.data = json.dumps(sensor_data)
         self.publisher_sensors.publish(msg)
-            
+        
+        #TEMP DEBUG - REMOVE AFTER USAGE
+        self.get_logger().info(f"[TEMP DEBUG] Published sensor payload: cycle={cycle}, sensor_data={sensor_data}")
+        self.get_logger().info(f"[TEMP DEBUG] GroundTruth RUL={gt_rul_hours:.3f} hours ({(gt_rul_hours*60):.3f} min)")
+        #TEMP DEBUG - REMOVE AFTER USAGE
+    
         self.get_logger().info(
                                 f"Published sensor data for cycle: {cycle} (in minutes) "
                             )

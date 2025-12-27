@@ -34,7 +34,7 @@ class Predictor_Node(Node):
         """
         super().__init__('Predictor_Node')
         
-        # Subscription to machine_hydraulic_press_node  TODO!!
+        # Subscription to machine_hydraulic_press_node  
         #self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 10)        
         
         # Subscription to machine_process_pump_node  
@@ -74,6 +74,10 @@ class Predictor_Node(Node):
         try: 
             received_data = json.loads(msg.data)
             self.get_logger().info(f"Received Process_Pump message")
+
+            #TEMP DEBUG - REMOVE AFTER USAGE
+            self.get_logger().info(f"[TEMP DEBUG] Raw sensor data (process_pump): cycle={received_data.get('cycle')} payload={received_data}")
+            #TEMP DEBUG - REMOVE AFTER USAGE
 
             if received_data.get("cycle") == 0:
                 self.pump_history = []          # reset history at new run / after maintenance

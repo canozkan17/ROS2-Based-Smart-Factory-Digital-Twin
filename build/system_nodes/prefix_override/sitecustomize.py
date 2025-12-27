@@ -1,4 +1,4 @@
 import sys
-if sys.prefix == '/home/canozkan/Capstone_Project/venv':
+if sys.prefix == '/usr':
     sys.real_prefix = sys.prefix
     sys.prefix = sys.exec_prefix = '/home/canozkan/Capstone_Project/install/system_nodes'

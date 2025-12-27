@@ -1,22 +1,7 @@
 [
-    "vibration",
     "degradation_index",
-    "vibration_volatility_surge",
-    "vibration_roll_std_20",
-    "temp_motor_slope_20",
-    "vib_motor_dev_long",
-    "vibration_dev_long",
-    "pressure_stability",
+    "vibration_energy",
+    "vibration",
     "temp_motor",
-    "pressure_roll_std_20",
-    "pressure",
-    "pressure_slope_20",
-    "temp_motor_roll_std_20",
-    "motor_pump_coupling",
-    "temp_motor_acceleration",
-    "temp_motor_volatility_surge",
-    "temp_motor_dev_long",
-    "vibration_acceleration",
-    "vib_motor_volatility_surge",
-    "pressure_volatility_surge"
+    "pressure"
 ]

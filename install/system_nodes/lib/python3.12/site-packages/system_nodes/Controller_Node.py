@@ -74,6 +74,10 @@ class Controller_Node(Node):
             prediction = json.loads(msg.data)
             self.get_logger().info(f"Received Process_Pump Predictions message")
 
+            #TEMP DEBUG - REMOVE AFTER USAGE
+            self.get_logger().info(f"[TEMP DEBUG] Raw prediction payload: {prediction}")
+            #TEMP DEBUG - REMOVE AFTER USAGE
+
             if prediction.get('machine') == 'process_pump':
 
                 # payload 
@@ -166,7 +170,7 @@ class Controller_Node(Node):
 
             remaining_min = max(0, total_cycle - cycle)
 
-            # sudden *increases* as likely glitches; sudden drops can be real (worse health)
+            # Treat sudden *increases* as likely glitches; sudden drops can be real (worse health)
             # and should not be ignored.
             if (rul - prev_rul) > 2000:
                 self.get_logger().warning("RUL spike detected (upward), ignoring")
@@ -222,7 +226,7 @@ class Controller_Node(Node):
                                             "recovery_time_min": recovery_time_min
                                         })
             self.control_cmd_publishers[machine].publish(control_msg)                       # informs the machine
-            self.publish_maintenance_schedule(machine, recovery_time_min, remaining_min)    # informs the job scheduler
+            self.publish_maintenance_schedule(machine, recovery_time_min, remaining_min) # informs the job scheduler
             self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}")
             # trigger the maintenance scheduling
 

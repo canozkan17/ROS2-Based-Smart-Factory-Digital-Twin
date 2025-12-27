@@ -25,8 +25,10 @@ from typing import Dict, Any, Optional, List
 
 import numpy as np
 
-
+# ==============================================================================
 # CONSTANTS - Must Match Training Exactly
+# ==============================================================================
+
 # Sensor names
 SENSORS = ['vibration', 'temp_motor', 'pressure', 'vib_motor']
 
@@ -36,12 +38,12 @@ WINDOW_LONG = 20
 
 # Selected features (order matters - must match model training)
 SELECTED_FEATURES = [
-                        "degradation_index",
-                        "vibration_energy",
-                        "vibration",
-                        "temp_motor",
-                        "pressure"
-                    ]
+    "degradation_index",
+    "vibration_energy",
+    "vibration",
+    "temp_motor",
+    "pressure"
+]
 
 # Stage-1 Classifier thresholds (from training notebook)
 THRESH_ENTER = 0.6   # Enter critical state
@@ -50,8 +52,10 @@ THRESH_EXIT = 0.2    # Exit critical state
 # Buffer size for rolling calculations
 MAX_BUFFER_SIZE = WINDOW_LONG + 10
 
-
+# ==============================================================================
 # GLOBAL STATE
+# ==============================================================================
+
 # Models (ONNX sessions or XGBoost objects)
 _base_model = None
 _stage1_classifier = None
@@ -70,8 +74,10 @@ _in_critical_state = False
 # Module initialization flag
 _initialized = False
 
-
+# ==============================================================================
 # MODEL LOADING
+# ==============================================================================
+
 def _find_model_directory() -> Path:
     """Locate the models_and_features/process_pump directory."""
     base_dir = Path(__file__).parent.resolve()
@@ -91,8 +97,8 @@ def _find_model_directory() -> Path:
             return candidate
     
     raise FileNotFoundError(
-                                f"Cannot locate models_and_features/process_pump from {base_dir}"
-                            )
+        f"Cannot locate models_and_features/process_pump from {base_dir}"
+    )
 
 
 def load_models() -> None:
@@ -119,10 +125,10 @@ def load_models() -> None:
     else:
         print(f"[process_pump_handler] WARNING: Feature stats not found, using defaults")
         _feature_stats = {
-                            "vibration": {"min": 0.0, "max": 8.0},
-                            "temp_motor": {"min": 40.0, "max": 1000.0},
-                            "pressure": {"min": -100.0, "max": 10.0}
-                        }
+            "vibration": {"min": 0.0, "max": 8.0},
+            "temp_motor": {"min": 40.0, "max": 1000.0},
+            "pressure": {"min": -100.0, "max": 10.0}
+        }
     
     # Try ONNX first (optimized for RPi)
     try:
@@ -137,22 +143,22 @@ def load_models() -> None:
         providers = ['CPUExecutionProvider']
         
         _base_model = ort.InferenceSession(
-                                                str(model_dir / "process_pump_base_model.onnx"),
-                                                sess_options=opts,
-                                                providers=providers
-                                            )
+            str(model_dir / "process_pump_base_model.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         
         _stage1_classifier = ort.InferenceSession(
-                                                    str(model_dir / "process_pump_stage1_classifier.onnx"),
-                                                    sess_options=opts,
-                                                    providers=providers
-                                                )
+            str(model_dir / "process_pump_stage1_classifier.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         
         _stage2a_regressor = ort.InferenceSession(
-                                                    str(model_dir / "process_pump_stage2a_regressor.onnx"),
-                                                    sess_options=opts,
-                                                    providers=providers
-                                                )
+            str(model_dir / "process_pump_stage2a_regressor.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         
         _initialized = True
         print("[process_pump_handler] ONNX models loaded successfully")
@@ -184,20 +190,22 @@ def load_models() -> None:
         raise RuntimeError(f"Failed to load models: {e}")
 
 
-
+# ==============================================================================
 # BUFFER MANAGEMENT
+# ==============================================================================
+
 def _add_to_buffer(sensor_data: Dict[str, Any]) -> None:
     """Add new sensor reading to rolling buffer."""
     global _data_buffer
     
     with _buffer_lock:
         _data_buffer.append({
-                                'cycle': int(sensor_data.get('cycle', 0)),
-                                'vibration': float(sensor_data.get('vibration', 0.0)),
-                                'temp_motor': float(sensor_data.get('temp_motor', 0.0)),
-                                'pressure': float(sensor_data.get('pressure', 0.0)),
-                                'vib_motor': float(sensor_data.get('vib_motor', 0.0)),
-                            })
+            'cycle': int(sensor_data.get('cycle', 0)),
+            'vibration': float(sensor_data.get('vibration', 0.0)),
+            'temp_motor': float(sensor_data.get('temp_motor', 0.0)),
+            'pressure': float(sensor_data.get('pressure', 0.0)),
+            'vib_motor': float(sensor_data.get('vib_motor', 0.0)),
+        })
         
         # Trim to max size
         if len(_data_buffer) > MAX_BUFFER_SIZE:
@@ -234,16 +242,18 @@ def _sync_buffer_from_history(history: List[Dict[str, Any]]) -> None:
         _data_buffer = []
         for d in recent:
             _data_buffer.append({
-                                    'cycle': int(d.get('cycle', 0)),
-                                    'vibration': float(d.get('vibration', 0.0)),
-                                    'temp_motor': float(d.get('temp_motor', 0.0)),
-                                    'pressure': float(d.get('pressure', 0.0)),
-                                    'vib_motor': float(d.get('vib_motor', 0.0)),
-                                })
+                'cycle': int(d.get('cycle', 0)),
+                'vibration': float(d.get('vibration', 0.0)),
+                'temp_motor': float(d.get('temp_motor', 0.0)),
+                'pressure': float(d.get('pressure', 0.0)),
+                'vib_motor': float(d.get('vib_motor', 0.0)),
+            })
 
 
-
+# ==============================================================================
 # FEATURE ENGINEERING
+# ==============================================================================
+
 def _compute_features() -> Optional[np.ndarray]:
     """
     Compute features from buffer matching training exactly.
@@ -273,13 +283,13 @@ def _compute_features() -> Optional[np.ndarray]:
         latest_temp = temp_motor[-1]
         latest_pres = pressure[-1]
         
-        # vibration_energy 
+        # ---- vibration_energy ----
         # Training: grouped['vibration'].rolling(window=5, min_periods=1).mean() ** 2
         window = min(WINDOW_SHORT, n)
         vib_roll_mean = np.mean(vibration[-window:])
         vibration_energy = vib_roll_mean ** 2
         
-        # degradation_index 
+        # ---- degradation_index ----
         # Training uses per-machine normalization over ENTIRE lifecycle.
         # At runtime, we use GLOBAL min/max from training data as approximation.
         # This works because:
@@ -313,27 +323,29 @@ def _compute_features() -> Optional[np.ndarray]:
         
         degradation_index = (vib_norm + temp_norm + pres_norm) / 3.0
         
-        #  Build feature vector 
+        # ---- Build feature vector ----
         # Order MUST match SELECTED_FEATURES and model training
         features = np.array([
-                                degradation_index,              # 0: degradation_index
-                                vibration_energy,               # 1: vibration_energy
-                                latest_vib,                     # 2: vibration
-                                latest_temp,                    # 3: temp_motor
-                                latest_pres                     # 4: pressure
-                            ], dtype=np.float32).reshape(1, -1)
+            degradation_index,    # 0: degradation_index
+            vibration_energy,     # 1: vibration_energy
+            latest_vib,           # 2: vibration
+            latest_temp,          # 3: temp_motor
+            latest_pres           # 4: pressure
+        ], dtype=np.float32).reshape(1, -1)
         
         return features
 
 
-
+# ==============================================================================
 # INFERENCE
+# ==============================================================================
+
 def _run_inference_onnx(X: np.ndarray) -> tuple:
     """Run inference using ONNX Runtime."""
-    input_name = _base_model.get_inputs()[0].name           # type: ignore
+    input_name = _base_model.get_inputs()[0].name
     
     # Stage-1: Classifier
-    stg1_outputs = _stage1_classifier.run(None, {input_name: X})  # type: ignore
+    stg1_outputs = _stage1_classifier.run(None, {input_name: X})
     label = int(np.asarray(stg1_outputs[0]).squeeze())
     
     # Extract probability (output[1] is probabilities for XGBoost classifier)
@@ -351,10 +363,10 @@ def _run_inference_onnx(X: np.ndarray) -> tuple:
         crit_prob = float(label)
     
     # BASE Model
-    base_rul = float(_base_model.run(None, {input_name: X})[0].squeeze())   # type: ignore
+    base_rul = float(_base_model.run(None, {input_name: X})[0].squeeze())
     
     # Stage-2A Regressor
-    stg2a_rul = float(_stage2a_regressor.run(None, {input_name: X})[0].squeeze())   # type: ignore
+    stg2a_rul = float(_stage2a_regressor.run(None, {input_name: X})[0].squeeze())
     
     return crit_prob, base_rul, stg2a_rul
 
@@ -362,19 +374,21 @@ def _run_inference_onnx(X: np.ndarray) -> tuple:
 def _run_inference_xgb(X: np.ndarray) -> tuple:
     """Run inference using XGBoost directly."""
     # Stage-1: Classifier
-    crit_prob = float(_stage1_classifier.predict_proba(X)[0, 1])    # type: ignore
+    crit_prob = float(_stage1_classifier.predict_proba(X)[0, 1])
     
     # BASE Model
-    base_rul = float(_base_model.predict(X)[0])  # type: ignore
+    base_rul = float(_base_model.predict(X)[0])
     
     # Stage-2A Regressor
-    stg2a_rul = float(_stage2a_regressor.predict(X)[0]) # type: ignore
+    stg2a_rul = float(_stage2a_regressor.predict(X)[0])
     
     return crit_prob, base_rul, stg2a_rul
 
 
-
+# ==============================================================================
 # MAIN PREDICTION FUNCTION
+# ==============================================================================
+
 def predict(sensor_data) -> Dict[str, Any]:
     """
     Main prediction function called by Predictor_Node.
@@ -407,11 +421,11 @@ def predict(sensor_data) -> Dict[str, Any]:
     if isinstance(sensor_data, list):
         if len(sensor_data) == 0:
             return {
-                        'rul_min': -1.0,
-                        'unit': 'min',
-                        'stage': 'NO_DATA',
-                        'crit_prob': 0.0
-                    }
+                'rul_min': -1.0,
+                'unit': 'min',
+                'stage': 'NO_DATA',
+                'crit_prob': 0.0
+            }
         # Use the entire history for rolling calculations
         _sync_buffer_from_history(sensor_data)
         current_data = sensor_data[-1]
@@ -431,11 +445,11 @@ def predict(sensor_data) -> Dict[str, Any]:
     
     if X is None:
         return {
-                    'rul_min': -1.0,
-                    'unit': 'min',
-                    'stage': 'INSUFFICIENT_DATA',
-                    'crit_prob': 0.0
-                }
+            'rul_min': -1.0,
+            'unit': 'min',
+            'stage': 'INSUFFICIENT_DATA',
+            'crit_prob': 0.0
+        }
     
     # Run inference
     try:
@@ -447,24 +461,24 @@ def predict(sensor_data) -> Dict[str, Any]:
     except Exception as e:
         print(f"[process_pump_handler] Inference error: {e}")
         return {
-                    'rul_min': -1.0,
-                    'unit': 'min',
-                    'stage': 'ERROR',
-                    'crit_prob': 0.0
-                }
+            'rul_min': -1.0,
+            'unit': 'min',
+            'stage': 'ERROR',
+            'crit_prob': 0.0
+        }
     
-    # Decision Logic with Hysteresis 
+    # ---- Decision Logic with Hysteresis ----
     # Training notebook thresholds:
     #   THRESH_ENTER = 0.6 (enter critical)
     #   THRESH_EXIT = 0.2 (exit critical)
     #
     # State machine:
     #   SAFE state:
-    #    - Stay SAFE if crit_prob < THRESH_ENTER
-    #    - Switch to CRITICAL if crit_prob >= THRESH_ENTER
-    # CRITICAL state:
-    #   - Stay CRITICAL if crit_prob > THRESH_EXIT
-    #   - Switch to SAFE if crit_prob <= THRESH_EXIT
+    #     - Stay SAFE if crit_prob < THRESH_ENTER
+    #     - Switch to CRITICAL if crit_prob >= THRESH_ENTER
+    #   CRITICAL state:
+    #     - Stay CRITICAL if crit_prob > THRESH_EXIT
+    #     - Switch to SAFE if crit_prob <= THRESH_EXIT
     
     if not _in_critical_state:
         # Currently in SAFE state
@@ -489,15 +503,17 @@ def predict(sensor_data) -> Dict[str, Any]:
     final_rul = max(0.0, final_rul)
     
     return {
-                'rul_min': float(final_rul),
-                'unit': 'min',
-                'stage': stage,
-                'crit_prob': float(np.clip(crit_prob, 0.0, 1.0))
-            }
+        'rul_min': float(final_rul),
+        'unit': 'min',
+        'stage': stage,
+        'crit_prob': float(np.clip(crit_prob, 0.0, 1.0))
+    }
 
 
-
+# ==============================================================================
 # MODULE INITIALIZATION
+# ==============================================================================
+
 # Attempt to pre-load models on import
 try:
     load_models()
