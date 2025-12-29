@@ -9,12 +9,13 @@ Handles tasks for the Hydraulic Press machine.
 
 from std_msgs.msg import String
 from rclpy.node import Node
-import numpy as _np
+import numpy as np
 import threading
 import random
 import rclpy
 import json
 import math
+import time
 
 
 class Machine_Hydraulic_Press_Node(Node):
@@ -24,22 +25,22 @@ class Machine_Hydraulic_Press_Node(Node):
         # Subscription to Job Orders
         self.subscription_job_orders = self.create_subscription(String, 'Job_Orders', self.listener_job_orders_callback, 10)      
         # Subscription to Control_CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD', self.listener_control_cmd_callback, 10)
+        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD/hydraulic_press', self.listener_control_cmd_callback, 10)
+        self.subscription_control_cmd_2 = self.create_subscription(String, 'Control_CMD/process_pump', self.listener_control_cmd_callback, 10) # for helper machine
               
         # Publisher for Sensors data
         self.publisher_sensors = self.create_publisher(String, "Sensors/hydraulic_press", 10)
         # Publisher for Completed status
-        self.publisher_completed = self.create_publisher(String, "Completed", 10)
+        self.publisher_completed = self.create_publisher(String, "Completed/hydraulic_press", 10)
+        # Publisher for maintenance feedback 
+        self.publisher_maintenance_feedback = self.create_publisher(String, "Maintenance_Feedback/hydraulic_press", 10)
+            
         
         # Variable set-up
         self.current_task = {}
         self.total_ran_cycles = 0
         self.total_production = 0
         self.total_time_producing = 0.0
-
-        # random lifetime (2000-2205 cycles, based on UCI dataset 2205 instances)
-        self.max_lifetime = random.randint(2000, 2205)  # in cycles
-        self.get_logger().info(f"Hydraulic Press initialized with max lifetime: {self.max_lifetime} cycles (ground truth, hidden)")
 
         # Simulation and production control flags
         # Set "REALTIME" for 60s per cycle, "FAST" for max speed
@@ -48,59 +49,63 @@ class Machine_Hydraulic_Press_Node(Node):
         self.cycles_to_run = 0
         self.cycles_done = 0
 
-        # Defaults and influence maps
-        self.material_factor = {
-                                "DC01_ZE": 1.00,
-                                "Stainless_304": 1.20,
-                                "Aluminium_6082_T6": 0.90,
-                               }
-        self.process_factors = {
-                                "bending": 1.00,
-                                "forming": 1.10,
-                                "drilling": 0.70,
-                                "grooving": 0.75,
-                                "pocketing": 0.80,
-                                "assembling": 0.50,
-                                "quality_control": 0.30,
-                               }
-        self.PRESS_MAP = {
-                            "bending": {
-                                        "DC01_ZE": {
-                                                    "speed_mm_s": (80, 120),
-                                                    "dwell_s": (0.0, 0.2),
-                                                    "baseline_tonnage_band_t": (20, 35)  # 2 mm, 1 m width, V=16 mm
-                                                    },
-                                        "Stainless_304": {
-                                                    "speed_mm_s": (60, 90),
-                                                    "dwell_s": (0.1, 0.3),
-                                                    "baseline_tonnage_band_t": (28, 48)
-                                                    },
-                                    "Aluminium_6082_T6": {
-                                                    "speed_mm_s": (100, 140),
-                                                    "dwell_s": (0.0, 0.2),
-                                                    "baseline_tonnage_band_t": (12, 22)
-                                                    },
-                                        },
-                            "forming": {
-                                        "DC01_ZE": {
-                                                    "speed_mm_s": (40, 80),
-                                                    "dwell_s": (0.3, 0.8),
-                                                    "baseline_tonnage_band_t": (25, 40)
-                                                    },
-                                        "Stainless_304": {
-                                                    "speed_mm_s": (30, 60),
-                                                    "dwell_s": (0.5, 1.0),
-                                                    "baseline_tonnage_band_t": (35, 55)
-                                                    },
-                                    "Aluminium_6082_T6": {
-                                                    "speed_mm_s": (60, 100),
-                                                    "dwell_s": (0.2, 0.6),
-                                                    "baseline_tonnage_band_t": (15, 25)
-                                                    },
-                                        }
-                            }
+        self.in_maintenance = False
+        self.control_cmd = "NORMAL_OPERATION"
 
+        # Defaults
+        self.SEED = 42
+        self.degredation_factor = 1.0
 
+        rng = np.random.default_rng(self.SEED)
+        
+        # total_rul (MUST be first to sync RNG state with training)
+        self.total_lifetime_minutes = int(rng.integers(120_000, 720_000))  # matches training
+        self.max_lifetime = self.total_lifetime_minutes / 60.0  # convert to hours
+        self.get_logger().info(f"Hydraulic_Press initialized with max lifetime: {self.max_lifetime:.1f} hours ({self.total_lifetime_minutes} min)")
+
+        # HYDRAULIC PRESS SENSOR PARAMETERS
+        # Hydraulic pressure (bar) - seal wear dominant
+        self.base_pressure = rng.uniform(180.0, 220.0)
+        self.pressure_drop_rate = rng.uniform(0.00005, 0.00015)
+        self.pressure_noise = rng.uniform(0.5, 2.0)
+
+        # Oil temperature (°C) - oil degradation
+        self.base_oil_temp = rng.uniform(45.0, 65.0)
+        self.oil_temp_rate = rng.uniform(0.0003, 0.001)
+        self.oil_temp_noise = rng.uniform(0.1, 0.6)
+
+        # Oil contamination index (dimensionless)
+        self.base_contamination = rng.uniform(0.5, 2.0)
+        self.contamination_growth = rng.uniform(0.00002, 0.00008)
+        self.contamination_noise = rng.uniform(0.01, 0.05)
+
+        # Ram position deviation (mm) - misalignment
+        self.base_ram_dev = rng.uniform(0.01, 0.05)
+        self.ram_dev_growth = rng.uniform(0.00001, 0.00005)
+        self.ram_dev_noise = rng.uniform(0.001, 0.005)
+
+        # Press force / tonnage (tons)
+        self.base_force = rng.uniform(80.0, 120.0)
+        self.force_loss_rate = rng.uniform(0.00003, 0.0001)
+        self.force_noise = rng.uniform(0.3, 1.5)
+
+        # Frame / ram vibration (mm/s)
+        self.base_vibration = rng.uniform(0.1, 0.5)
+        self.failure_vibration = rng.uniform(3.0, 8.0)
+        self.vibration_noise = rng.uniform(0.02, 0.1)
+
+        # Hydraulic flow rate (L/min)
+        self.base_flow = rng.uniform(90.0, 130.0)
+        self.flow_loss_rate = rng.uniform(0.00004, 0.00012)
+        self.flow_noise = rng.uniform(0.3, 1.2)
+
+        # Motor current (A)
+        self.base_current = rng.uniform(30.0, 55.0)
+        self.current_growth_rate = rng.uniform(0.00005, 0.0002)
+        self.current_noise = rng.uniform(0.1, 0.6)
+        
+        # Store RNG for noise generation during simulation
+        self.RNG = rng
 
         # Set-up logs
         self.get_logger().info("Machine Hydraulic Press node ready!")
@@ -161,246 +166,160 @@ class Machine_Hydraulic_Press_Node(Node):
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 
-    # TODO: Implement actual processing logic here in due time && check sent data format.
     def listener_control_cmd_callback(self, msg: String):
         """
-        Callback function for Control_CMD subscription.
+        Callback function for Control CMD subscription.
+        Processes control commands for corrective/preventative actions.
         """
-        self.get_logger().info(f"Received Control_CMD message: {json.dumps(msg.data, indent=2)}")
+        control_msg = json.loads(msg.data)
+        self.get_logger().info(f"Received Control Command")
 
-    def calculate_tonnage(self):
-        """
-        Calculates estimated tonnage based on current task's material, process, thickness, and width.
-        Scaling is done relative to the 2 mm / 1000 mm reference in PRESS_MAP
-        """
-        
-        material = self.current_task['material']
-        process = self.current_task['process']
-        thickness_mm = float(self.current_task['part_thickness_mm'])
-        width_mm = float(self.current_task['part_width_mm'])
+        # Extract control command and recovery time from the message
+        command = control_msg.get("command", "NORMAL_OPERATION")
+        self.maintenance_cycles_remaining = control_msg.get("recovery_time_min", 0)
 
-        if thickness_mm <= 0:
-            self.get_logger().warn("Invalid thickness value.")
-            return 0.0
+        if command == "SHUTDOWN":
+            self.get_logger().info(f"Received SHUTDOWN command. Stopping current task.")
+            self.control_cmd = "SHUTDOWN"
+            self.in_maintenance = True
+            if self.production_timer:
+                self.production_timer.cancel()
+                self.production_timer = None
 
-        # Get baseline tonnage band from PRESS_MAP
-        press_proc = self.PRESS_MAP.get(process)
+        elif command == "SLOW_DOWN":
+            self.control_cmd = "SLOW_DOWN"
+            self.get_logger().info(f"Received SLOW_DOWN command. Slowing down operation.")
+            self.degredation_factor *= 0.9  # slowing down degradation by 10%
         
-        if not press_proc:
-            self.get_logger().error(f"Process '{process}' not found in PRESS_MAP.")
-            return 30.0 # default average value
         
-            
-        mat_entry = press_proc.get(material)
-        if mat_entry:
-            base_min, base_max = mat_entry["baseline_tonnage_band_t"]
-            base_avg = (base_min + base_max) / 2.0
+        elif command == "NORMAL_OPERATION":
+            self.get_logger().info(f"Received NORMAL_OPERATION command. Continuing operation.")
         else:
-            self.get_logger().warn(f"Material '{material}' not found for process '{process}'. Using default tonnage.")
-            base_avg = 30.0  # default average value
+            self.get_logger().warning(f"Unknown command received: {command}")
 
-        # Effect of thickness based on process type (approximation)
-        if process == "bending":
-            thickness_exp = 1.0
-        elif process == "forming":
-            thickness_exp = 1.3
-        else:
-            thickness_exp = 1.0
+    def maintenance_timer(self):
+        """
+        Handles maintenance cycles when in maintenance mode.
+        In REALTIME mode, sets a timer for maintenance duration.
+        In FAST mode, decrements maintenance cycles immediately - causing friction of waiting for maintenance to finish thus simulating.
+        """
+        if not self.in_maintenance:
+            return
 
-        material_fac = self.material_factor.get(material, 1.0)
-        process_fac = self.process_factors.get(process, 1.0)
+        if self.simulation_mode == "REALTIME":
+            self.get_logger().info(
+                f"REALTIME maintenance started for {self.maintenance_cycles_remaining} cycles"
+            )
 
-        # 2 mm reference for thickness scaling
-        thickness_scale = (thickness_mm / 2.0) ** thickness_exp
-        # 1000 mm reference for width scaling
-        width_scale = width_mm / 1000.0
+            self.maintenance_realtime_timer = self.create_timer(
+                                                                    self.maintenance_cycles_remaining * 60.0,
+                                                                    self.finish_maintenance,
+                                                                    callback_group=None
+                                                                )
 
-        tonnage = base_avg * thickness_scale * width_scale * material_fac * process_fac
-        tonnage = max(0.1, tonnage)
-
-        return tonnage
+        elif self.simulation_mode == "FAST":
+            while self.maintenance_cycles_remaining > 0:
+                self.maintenance_cycles_remaining -= 1
+                time.sleep(0.01)  # small sleep to simulate time passage
+            self.finish_maintenance()
     
-    def calulate_production_rate(self):
+    def finish_maintenance(self):
+        self.degredation_factor = 1.0
+        self.in_maintenance = False
+        self.maintenance_cycles_remaining = 0
+
+        self.cycles_done = 0
+        self.control_cmd = "NORMAL_OPERATION"
+        self.current_task = {}
+
+        # MAINTENANCE_FEEDBACK
+        msg = String()
+        msg.data = json.dumps({
+                                    "machine": "process_pump",
+                                    "status": "READY"
+                                })
         
-        self.total_production += self.current_task['produce_amount']
-        self.total_time_producing += self.current_task['task_time']
-        production_rate_per_hour = (self.total_production / self.total_time_producing) * 3600.0
-        return production_rate_per_hour
+        self.publisher_maintenance_feedback.publish(msg) 
 
-    def _get_degradation_state(self, current_rul: float, max_rul: float) -> dict:
-        """Return dataset-like health parameters for the current cycle."""
-        degradation_ratio = max(0.0,1.0 - (current_rul / max_rul)) # clamp 0-1
-
-        idx = self.total_ran_cycles
-        state = {
-                    "health": 1.0 - degradation_ratio * 0.95,  # Overall health drops to ~0.05 at end
-                    "cooler_eff": max(40, 100 - 60 * degradation_ratio),  # Cooler fails first (profile 1)
-                    "valve_cond": max(73, 100 - 27 * degradation_ratio),  # Valve mid-degradation (profile 2)
-                    "pump_leak": min(3.0, degradation_ratio * 3.0),  # Pump leak ramps up (profile 3)
-                    "acc_pressure": max(90, 130 - 40 * degradation_ratio),  # Accumulator drops last (profile 4)
-                    "internal_leak": min(1.0, degradation_ratio * 1.0)  # Leak increases steadily
-                }
-
-        if idx < 1800:
-            pass
-        elif idx < 2000:
-            frac = (idx - 1800) / 200
-            state["health"] = 1.0 - 0.3 * frac
-            state["cooler_eff"] = 100 - 60 * frac
-        elif idx < 2100:
-            frac = (idx - 2000) / 100
-            state["health"] = 0.7 - 0.4 * frac
-            state["cooler_eff"] = 40
-            state["valve_cond"] = 100 - 27 * frac
-            state["pump_leak"] = 0.02 * (idx - 2000)
-        elif idx < 2150:
-            frac = (idx - 2100) / 50
-            state["health"] = 0.3 - 0.2 * frac
-            state["cooler_eff"] = 40
-            state["valve_cond"] = 73
-            state["pump_leak"] = 2 + 0.02 * (idx - 2100)
-            state["acc_pressure"] = 130 - 40 * frac
-            state["internal_leak"] = min(1.0, 0.02 * (idx - 2100))
-        else:
-            state["health"] = max(0.05, 0.1 - 0.05 * (idx - 2150) / 100)
-            state["cooler_eff"] = 40
-            state["valve_cond"] = 73
-            state["pump_leak"] = 3.0
-            state["acc_pressure"] = 90
-            state["internal_leak"] = 1.0
-        return state
-
-    def _flags_from_state(self, state):
-        """Translate degradation state into UCI profile flags."""
-        cooler = 100 if state["cooler_eff"] >= 90 else 40 if state["cooler_eff"] >= 40 else 3
-        valve = 100 if state["valve_cond"] >= 90 else 73
-        pump = 0
-        if state["pump_leak"] >= 3:
-            pump = 3
-        elif state["pump_leak"] >= 2:
-            pump = 2
-        elif state["pump_leak"] >= 1:
-            pump = 1
-        accumulator = 130 if state["acc_pressure"] >= 120 else 115 if state["acc_pressure"] >= 100 else 90
-        internal_leak = 0 if state["internal_leak"] < 0.5 else 1
-        return {
-                    "cooler": cooler,
-                    "valve": valve,
-                    "pump": pump,
-                    "accumulator": accumulator,
-                    "stable": 1,
-                    "internal_leakage": internal_leak
-                }
-
-    def generate_sensor_data(self):
-        """Create UCI-compatible raw signals for one 60 s cycle."""
-        current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+        self.get_logger().info(f"Maintenance completed. Machine READY. Degradation reset. Cycles done reset. Machine total ran cycles: {self.total_ran_cycles} minutes.")
 
 
-        lengths = {"100hz": 6000, "10hz": 600, "1hz": 60}
-        state = self._get_degradation_state(current_rul, self.max_lifetime)
-        tonnage = self.calculate_tonnage()
-        load_factor = min(2.5, tonnage / 40.0)
-        t100 = _np.linspace(0, 60, lengths["100hz"])
-        t10 = _np.linspace(0, 60, lengths["10hz"])
-        t1 = _np.linspace(0, 60, lengths["1hz"])
-        pulse = _np.exp(-((t100 - 30) ** 2) / (2 * 3 ** 2))
+    def generate_cycle(self, total_rul: int, rng: np.random.Generator):
 
-        # Pressures PS1-PS6
-        ps_nominals = [160, 155, 158, 152, 150, 148]
-        ps_data = {}
-        for idx, base in enumerate(ps_nominals, start=1):
-            signal = base + 70 * load_factor * pulse
-            signal *= state["health"]
-            signal += _np.random.normal(0, 2.5, lengths["100hz"])
-            if state["internal_leak"] > 0.5:
-                signal *= 0.85
-            ps_data[f"PS{idx}"] = _np.clip(signal, 0, 350).tolist()
+        t = float(self.cycles_done)
+        current_rul = total_rul - t - 1
+        fraction = t / total_rul
 
-        # EPS1
-        eps_base = 3000 + 2000 * load_factor
-        eps_signal = eps_base * (1 + 0.35 * pulse) * state["health"]
-        if state["pump_leak"] > 1.5:
-            eps_signal *= 1.1
-        eps_signal += _np.random.normal(0, 40, lengths["100hz"])
-        EPS1 = _np.clip(eps_signal, 500, 12000).tolist()
+        # CRITICAL REGION BOOST (RUL <= 600)
+        critical_mask = current_rul <= 600
+        critical_boost = np.where(
+                                    critical_mask,
+                                    1.0 + (600 - current_rul) / 600 * 0.6,
+                                    1.0
+                                )
 
-        # FS1, FS2
-        FS1 = (11 + 2.2 * load_factor + _np.random.normal(0, 0.25, lengths["10hz"]))
-        FS2 = (9 + 1.7 * load_factor + _np.random.normal(0, 0.25, lengths["10hz"]))
-        if state["internal_leak"] > 0.5:
-            FS1 *= 0.8
-            FS2 *= 0.8
+        # SENSOR SIGNAL GENERATION
+        hydraulic_pressure = (
+                                self.base_pressure
+                                - self.pressure_drop_rate * t * critical_boost * self.degredation_factor
+                                + rng.normal(0.0, self.pressure_noise * (1.0 + fraction), size=total_rul)
+                            )
 
-        # Temperatures TS1-TS4
-        base_temp = 38 + 12 * (1 - state["cooler_eff"] / 100) + 6 * load_factor
-        offsets = [-1.5, 0.5, 1.5, -0.5]
-        TS = {}
-        for i in range(4):
-            TS[f"TS{i+1}"] = (
-                                 base_temp + offsets[i] + _np.random.normal(0, 0.6, lengths["1hz"])
-                            ).tolist()
+        oil_temperature = (
+                            self.base_oil_temp
+                            + self.oil_temp_rate * t * critical_boost * self.degredation_factor
+                            + rng.normal(0.0, self.oil_temp_noise, size=total_rul)
+                        )
 
-        # VS1
-        VS1 = (
-                    0.5 + 0.7 * load_factor + 0.4 * (1 - state["health"])
-                    + _np.random.normal(0, 0.05, lengths["1hz"])
-               ).tolist()
+        oil_contamination = (
+                                self.base_contamination
+                                + self.contamination_growth * t * critical_boost * self.degredation_factor
+                                + rng.normal(0.0, self.contamination_noise * (1.0 + fraction), size=total_rul)
+                            )
 
-        # CE, CP, SE
-        CE = (
-                    100 - 0.45 * (base_temp - 38) - 12 * (1 - state["health"])
-                    + _np.random.normal(0, 1.5, lengths["1hz"])
-            ).tolist()
-        
-        CP = (
-                2.0 + 0.4 * state["pump_leak"] + _np.random.normal(0, 0.08, lengths["1hz"])
-            ).tolist()
-        
-        SE = (
-                90 - 18 * (1 - state["health"]) + _np.random.normal(0, 2.5, lengths["1hz"])
-            ).tolist()
+        ram_position_deviation = (
+                                    self.base_ram_dev
+                                    + self.ram_dev_growth * t * critical_boost * self.degredation_factor
+                                    + rng.normal(0.0, self.ram_dev_noise, size=total_rul)
+                                )
 
-        flags = self._flags_from_state(state)
+        press_force = (
+                        self.base_force
+                        - self.force_loss_rate * t * critical_boost * self.degredation_factor
+                        + rng.normal(0.0, self.force_noise * (1.0 + 0.5 * fraction), size=total_rul)
+                    )
+
+        vibration = (
+                        self.base_vibration
+                        + (self.failure_vibration - self.base_vibration) * (fraction ** 2) * critical_boost * self.degredation_factor
+                        + rng.normal(0.0, self.vibration_noise * (1.0 + fraction), size=total_rul)
+                    )
+
+        flow_rate = (
+                        self.base_flow
+                        - self.flow_loss_rate * t * critical_boost * self.degredation_factor
+                        + rng.normal(0.0, self.flow_noise * (1.0 + fraction), size=total_rul)
+                    )
+
+        motor_current = (
+                            self.base_current
+                            + self.current_growth_rate * t * critical_boost * self.degredation_factor
+                            + rng.normal(0.0, self.current_noise * (1.0 + fraction), size=total_rul)
+                        )
+
+        cycle_output = {
+                            "hydraulic_pressure": float(hydraulic_pressure),
+                            "oil_temperature": float(oil_temperature),
+                            "oil_contamination": float(oil_contamination),
+                            "ram_position_deviation": float(ram_position_deviation),
+                            "press_force": float(press_force),
+                            "vibration": float(vibration),
+                            "flow_rate": float(flow_rate),
+                            "motor_current": float(motor_current),
+                        }
+
         self.total_ran_cycles += 1
-
-        if current_rul <= 0:
-            self.get_logger().warn(f"Hydraulic Press has reached end of life at cycle {self.total_ran_cycles - 1}!")
-
-        return {
-                    "cycle": self.total_ran_cycles - 1,
-                    "num_cycles": self.cycles_to_run,
-                    "load_factor": round(float(load_factor), 3),
-                    "tonnage_est": round(float(tonnage), 2),
-                    "PS1": ps_data["PS1"],
-                    "PS2": ps_data["PS2"],
-                    "PS3": ps_data["PS3"],
-                    "PS4": ps_data["PS4"],
-                    "PS5": ps_data["PS5"],
-                    "PS6": ps_data["PS6"],
-                    "EPS1": EPS1,
-                    "FS1": FS1.tolist(),
-                    "FS2": FS2.tolist(),
-                    "TS1": TS["TS1"],
-                    "TS2": TS["TS2"],
-                    "TS3": TS["TS3"],
-                    "TS4": TS["TS4"],
-                    "VS1": VS1,
-                    "CE": CE,
-                    "CP": CP,
-                    "SE": SE,
-                    "profile": flags
-                }
-    
-    def publish_generated_data(self):
-        """
-        Publishes generated sensor data to Sensors topic.
-        """
-        sensor_data = self.generate_sensor_data()
-        sensor_msg = String()
-        sensor_msg.data = json.dumps(sensor_data)
-        self.publisher_sensors.publish(sensor_msg)
-        self.get_logger().info(f"Published sensor data for cycle {self.total_ran_cycles - 1}.")
+        return cycle_output
 
     def publish_completed_status(self):
         """
@@ -417,7 +336,10 @@ class Machine_Hydraulic_Press_Node(Node):
         Callback for the rclpy.Timer (REALTIME mode).
         Runs one production cycle every 60 seconds.
         """
-        current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+        elapsed_minutes = float(self.cycles_done)
+        elapsed_hours = elapsed_minutes / 60.0
+        current_rul = max(0.0, self.max_lifetime - elapsed_hours)
+
         if current_rul <= 0:
             self.get_logger().error(f"Machine failure! RUL=0, stopping task {self.current_task.get('job_ID', 'unknown')}.")
             self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
@@ -432,13 +354,21 @@ class Machine_Hydraulic_Press_Node(Node):
             self.get_logger().info(f"Task {self.current_task.get('job_ID')} completed in REALTIME mode.")
             if self.production_timer:
                 self.production_timer.cancel()
+                self.production_timer = None 
+                # Publish completed status
+                self.current_task['status'] = 'COMPLETED'
+                self.publish_completed_status()
+        
+            if self.in_maintenance:
+                self.maintenance_timer()
+            return
+        
+        if self.control_cmd == "SHUTDOWN":
+            self.get_logger().info(f"REALTIME simulation stopped due to SHUTDOWN command at cycle {self.cycles_done}.")
+            if self.production_timer:
+                self.production_timer.cancel()
                 self.production_timer = None
-            
-            # Publish completed status
-            self.current_task['status'] = 'COMPLETED'
-            self.publish_completed_status()
-            
-            
+                self.maintenance_timer()
             return
 
         # If not completed, run one cycle
@@ -449,33 +379,77 @@ class Machine_Hydraulic_Press_Node(Node):
     def run_fast_simulation(self):
         """
         Runs all production cycles as fast as possible in a separate thread (FAST mode).
+            
         """
         self.get_logger().info(f"FAST simulation started for {self.cycles_to_run} cycles.")
         
         try:
             for _ in range(self.cycles_to_run):
                 # In FAST mode, just loop and publish
-                current_rul = max(0.0, self.max_lifetime - self.total_ran_cycles)
+                elapsed_minutes = float(self.cycles_done)
+                elapsed_hours = elapsed_minutes / 60.0
+                current_rul = max(0.0, self.max_lifetime - elapsed_hours)
+
                 if current_rul <= 0:
-                    self.get_logger().error(f"Machine failure during FAST sim! RUL=0 at cycle {self.total_ran_cycles}.")
+                    self.get_logger().error(f"Machine failure during FAST sim! RUL=0 at cycle {self.cycles_done}.")
                     self.current_task['status'] = 'FAILED_DUE_TO_DEGRADATION'
                     #TODO: Publish failure status in due time at this line. 
                     break
                 
+                if self.control_cmd == "SHUTDOWN":
+                    self.get_logger().info(f"FAST simulation stopped due to SHUTDOWN command at cycle {self.cycles_done}. remaining cycles: {self.cycles_to_run - self.cycles_done}.")
+                    break
+
                 self.publish_generated_data()
                 self.cycles_done += 1
-                        
+            
+            if self.in_maintenance:
+                if self.control_cmd == "SLOW_DOWN":
+                    self.get_logger().info(f"FAST simulation stopped due to SLOW_DOWN command")
+                self.maintenance_timer()
+            
         except Exception as e:
             self.get_logger().error(f"Error during FAST simulation: {e}")
         
         finally:
             self.get_logger().info(f"Task {self.current_task.get('job_ID')} completed in FAST mode.")
             
-            
             # Publish completed status
             self.current_task['status'] = 'COMPLETED'
             self.publish_completed_status()
             
+    def publish_generated_data(self):
+        """
+        Publishes generated sensor data to Sensors topic.
+        """
+        # Cycle info in minutes
+        cycle = self.cycles_done
+        
+        # Elapsed time in hours
+        elapsed_hours = float(cycle) / 60.0
+        
+        # Ground Truth RUL
+        gt_rul_hours = max(0.0, self.max_lifetime - elapsed_hours)
+        
+        sensor_data = self.generate_cycle(
+                                            total_rul=self.total_lifetime_minutes,
+                                            rng=self.RNG
+                                        )
+        
+                
+        sensor_data['cycle'] = cycle
+        sensor_data['elapsed_hours'] = round(elapsed_hours, 6)
+        sensor_data['elapsed_minutes'] = float(cycle)
+
+
+        msg = String()
+        msg.data = json.dumps(sensor_data)
+        self.publisher_sensors.publish(msg)
+            
+        self.get_logger().info(
+                                f"Published sensor data for cycle: {cycle} (in minutes) "
+                            )
+        self.get_logger().info(f"GroundTruth RUL={gt_rul_hours:.1f} hours ({(gt_rul_hours*60):.1f} min) after cycle {self.cycles_done}/{self.cycles_to_run}.")
             
             
 

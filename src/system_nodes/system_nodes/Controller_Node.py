@@ -38,8 +38,8 @@ class Controller_Node(Node):
 
         # Publishers for predictions
         self.control_cmd_publishers = {
-                                        "hydraulic_press": self.create_publisher(String, "control_CMD/hydraulic_press", 10),
-                                        "process_pump": self.create_publisher(String, "control_CMD/process_pump", 10)
+                                        "hydraulic_press": self.create_publisher(String, "Control_CMD/hydraulic_press", 10),
+                                        "process_pump": self.create_publisher(String, "Control_CMD/process_pump", 10)
                                     }
         # Publisher for maintenance queue
         self.maintenance_publisher = self.create_publisher(String, "Maintenance_Queue", 10)

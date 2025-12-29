@@ -38,7 +38,7 @@ class Job_Scheduler_Node(Node):
         # Subscription to Maintenance Queue from Controller_Node
         self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_maintenance_queue_callback, 10)
         # Subscription to Completed
-        self.subscription_completed = self.create_subscription(String, 'Completed', self.listener_completed_callback, 10)
+        self.subscription_completed = self.create_subscription(String, 'Completed/hydraulic_press', self.listener_completed_callback, 10)
 
         # Subscription to Maintenance Feedback
         self.subscription_maintenance_feedback = {

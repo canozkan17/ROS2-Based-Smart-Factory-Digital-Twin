@@ -35,10 +35,11 @@ class Predictor_Node(Node):
         super().__init__('Predictor_Node')
         
         # Subscription to machine_hydraulic_press_node  TODO!!
-        #self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 10)        
+        self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 10)
         
-        # Subscription to machine_process_pump_node  
-        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 10)    
+        # Subscription to machine_process_pump_node
+        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 10)
+
 
         # Publishers for predictions
         self.prediction_publishers = {
@@ -115,6 +116,15 @@ class Predictor_Node(Node):
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
     
+    def listener_hydraulic_press_callback(self, msg: String):
+        """
+        Callback function for Hydraulic_Press subscription.
+        """
+        try: 
+            received_data = json.loads(msg.data)
+            self.get_logger().info(f"Received Hydraulic_Press message")
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"User Input JSON parse error: {e}")
 
     def publish_generated_data(self, prediction_payload, cycle:int, machine=None):
         """

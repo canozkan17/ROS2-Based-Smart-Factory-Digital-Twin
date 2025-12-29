@@ -35,8 +35,8 @@ class Machine_Process_Pump_Sensor_Node(Node):
         self.subscription_job_order = self.create_subscription(String, 'Job_Orders', self.listener_job_orders_callback, 10)
     
         # Subscription to Control CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'control_CMD/process_pump', self.listener_callback_control_cmd, 10)
-        self.subscription_control_cmd_2 = self.create_subscription(String, 'control_CMD/hydraulic_press', self.listener_callback_control_cmd, 10) # listens to the main machine too.
+        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD/process_pump', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd_2 = self.create_subscription(String, 'Control_CMD/hydraulic_press', self.listener_callback_control_cmd, 10) # listens to the main machine too.
         
 
         # Publisher for Sensors data
@@ -68,7 +68,7 @@ class Machine_Process_Pump_Sensor_Node(Node):
         # Training generator (generate_pump_data.py) uses this order:
         #   1. RNG.integers(30000, 48001) -> total_rul
         #   2. RNG.uniform(0.02, 0.3) -> base_vib
-        #   3. RNG.uniform(2.0, 6.0) -> failure_vib       
+        #   3. RNG.uniform(2.0, 6.0) -> failure_vib
         rng = np.random.default_rng(self.SEED)
         
         # total_rul (MUST be first to sync RNG state with training)
@@ -95,10 +95,6 @@ class Machine_Process_Pump_Sensor_Node(Node):
         # Store RNG for noise generation during simulation
         self.RNG = rng
         
-        # Log the critical parameters for debugging
-        self.get_logger().info(f"[PARAMS] k_temp={self.k_temp:.6f}, k_pressure={self.k_pressure:.6f}")
-
-
         self.get_logger().info("Process Pump Sensor node ready!")
         self.get_logger().info("Listening on 'Job_Orders' topic.")
         self.get_logger().info("Listening on 'Control_CMD' topic.")

@@ -35,19 +35,21 @@ class temp_GUI_Node(Node):
         super().__init__('temp_GUI_Node')
         
         # Subscription to Sensors
-        self.subscription_sensors = self.create_subscription(String, 'Sensors', self.listener_callback_sensors, 10)
+        self.subscription_sensors = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_callback_sensors, 10)
+        self.subscription_sensors = self.create_subscription(String, 'Sensors/process_pump', self.listener_callback_sensors, 10)
 
         # Subscription to Completed
-        self.subscription_completed = self.create_subscription(String, 'Completed', self.listener_callback_completed, 10)
+        self.subscription_completed = self.create_subscription(String, 'Completed/hydraulic_press', self.listener_callback_completed, 10)
         
         # Subscription to Job Orders
         self.subscription_job_order = self.create_subscription(String, 'Job_Orders', self.listener_callback_job_orders, 10)
     
         # Subscription to Control CMD
-        self.subscription_control_cmd = self.create_subscription(String, 'control_CMD', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD/process_pump', self.listener_callback_control_cmd, 10)
+        self.subscription_control_cmd = self.create_subscription(String, 'Control_CMD/hydraulic_press', self.listener_callback_control_cmd, 10)
     
         # Subscription to Maintenance Queue
-        self.subscription_maintenance_queue = self.create_subscription(String, 'maintenance_queue', self.listener_callback_maintenance_queue, 10)
+        self.subscription_maintenance_queue = self.create_subscription(String, 'Maintenance_Queue', self.listener_callback_maintenance_queue, 10)
 
         # Publisher for Sensors data
         self.publisher_user_input = self.create_publisher(String, "User_Input", 10)
@@ -354,7 +356,7 @@ class temp_GUI_Node(Node):
 
 def main(args=None):
     """
-    Main entry point for the machine_hydraulic_press_sensor_node.
+    Main entry point for the temporary GUI node.
     """
     rclpy.init(args=args)
     node = temp_GUI_Node()

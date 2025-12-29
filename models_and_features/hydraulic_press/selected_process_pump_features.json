@@ -1,0 +1,18 @@
+[
+    "vibration_energy",
+    "vibration",
+    "degradation_index",
+    "flow_rate_roll_std_20",
+    "press_force",
+    "oil_contamination",
+    "oil_temperature",
+    "press_force_roll_std_20",
+    "vibration_roll_std_20",
+    "flow_rate",
+    "force_pressure_coupling",
+    "hydraulic_pressure",
+    "motor_current",
+    "ram_position_deviation_roll_std_20",
+    "oil_temperature_roll_std_20",
+    "motor_current_roll_std_20"
+]

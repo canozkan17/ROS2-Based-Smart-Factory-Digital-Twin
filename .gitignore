@@ -21,4 +21,8 @@ test.py
 out/diagram
 diagram.puml
 synthetic_pump_data_long_life.csv
+synthetic_pump_short_life.csv
 synthetic_hydraulic_press_data_long_life.csv
+synthetic_hydraulic_press_data_short_life.csv
+synthetic_hydraulic_press_data_long_life.parquet
+synthetic_hydraulic_press_data_short_life.parquet

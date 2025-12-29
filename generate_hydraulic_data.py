@@ -11,12 +11,12 @@ RNG = np.random.default_rng(seed=SEED)
 # Dataset 1: LONG LIFE (Base Model)
 LONG_MIN_RUL = 120_000
 LONG_MAX_RUL = 720_000
-LONG_N_CYCLES = 60
+LONG_N_CYCLES = 30
 
 # Dataset 2: SHORT LIFE (Two-Stage Models)
 SHORT_MIN_RUL = 600
 SHORT_MAX_RUL = 3_000
-SHORT_N_CYCLES = 120
+SHORT_N_CYCLES = 80
 
 # Critical region threshold for Hydraulic Press
 CRITICAL_RUL_THRESHOLD = 600
