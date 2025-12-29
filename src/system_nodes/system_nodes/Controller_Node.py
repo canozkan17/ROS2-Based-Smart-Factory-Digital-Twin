@@ -182,9 +182,9 @@ class Controller_Node(Node):
                 # Required buffer to safely finish the job
                 required_time = remaining_min + self.process_pump_SAFE_BUFFER
 
-                if rul >= required_time:
+                if rul >= required_time: # job can be finished
                     command = "SLOW_DOWN"
-                else:
+                else:                       # job cant be finished
                     command = "SHUTDOWN"
 
             # SAFE ZONE
