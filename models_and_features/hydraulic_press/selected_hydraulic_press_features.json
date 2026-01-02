@@ -1,0 +1,22 @@
+[
+    "vibration_roll_std_20",
+    "degradation_index",
+    "vibration",
+    "vibration_energy",
+    "vibration_dev_long",
+    "hydraulic_pressure_dev_long",
+    "flow_rate_roll_mean_5",
+    "oil_temperature_roll_std_20",
+    "force_pressure_coupling",
+    "press_force_roll_mean_5",
+    "flow_rate_roll_mean_20",
+    "hydraulic_pressure_roll_mean_5",
+    "flow_rate",
+    "motor_current_roll_mean_20",
+    "oil_temperature_roll_mean_5",
+    "oil_temperature_roll_mean_20",
+    "vibration_volatility_surge",
+    "press_force_roll_mean_20",
+    "press_force",
+    "motor_current"
+]

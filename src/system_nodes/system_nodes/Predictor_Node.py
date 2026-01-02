@@ -13,7 +13,8 @@ Subscribes to Sensors topic for raw data input.
 
 Publishes selected job order to Predictions Topic. 
 """
-from system_nodes.prediction_handler import process_pump_prediction_handler as pp_handler
+from system_nodes.prediction_handler import process_pump_prediction_handler as process_pump_handler
+from system_nodes.prediction_handler import hydraulic_press_prediction_handler as hydraulic_press_handler
 from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
 from rclpy.node import Node
@@ -57,7 +58,8 @@ class Predictor_Node(Node):
         self.predicted_rul_process_pump = None
 
         # Load models and features into memory
-        pp_handler.load_models()
+        process_pump_handler.load_models()
+        hydraulic_press_handler.load_models()
     
         # Control flags
         self.process_finished = False
@@ -98,7 +100,7 @@ class Predictor_Node(Node):
                 return None
                 
             # WHERE MAGIC HAPPENS
-            prediction_result = pp_handler.predict(self.pump_history)
+            prediction_result = process_pump_handler.predict(self.pump_history)
 
             if isinstance(prediction_result, dict):
                 self.predicted_rul_process_pump = prediction_result.get("rul_min")

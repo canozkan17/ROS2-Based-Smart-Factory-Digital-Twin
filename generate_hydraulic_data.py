@@ -11,12 +11,12 @@ RNG = np.random.default_rng(seed=SEED)
 # Dataset 1: LONG LIFE (Base Model)
 LONG_MIN_RUL = 120_000
 LONG_MAX_RUL = 720_000
-LONG_N_CYCLES = 30
+LONG_N_CYCLES = 50  # Increased for better generalization
 
 # Dataset 2: SHORT LIFE (Two-Stage Models)
 SHORT_MIN_RUL = 600
 SHORT_MAX_RUL = 3_000
-SHORT_N_CYCLES = 80
+SHORT_N_CYCLES = 150  # Increased for Stage-2A accuracy
 
 # Critical region threshold for Hydraulic Press
 CRITICAL_RUL_THRESHOLD = 600
@@ -40,7 +40,7 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
     critical_mask = current_rul <= CRITICAL_RUL_THRESHOLD
     critical_boost = np.where(
                                 critical_mask,
-                                1.0 + (CRITICAL_RUL_THRESHOLD - current_rul) / CRITICAL_RUL_THRESHOLD * 0.6,
+                                1.0 + (CRITICAL_RUL_THRESHOLD - current_rul) / CRITICAL_RUL_THRESHOLD * 2.0,  # Stronger boost
                                 1.0
                             )
 
@@ -48,43 +48,43 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
     # HYDRAULIC PRESS SENSOR PARAMETERS
     # Hydraulic pressure (bar) - seal wear dominant
     base_pressure = rng.uniform(180.0, 220.0)
-    pressure_drop_rate = rng.uniform(0.00005, 0.00015)
-    pressure_noise = rng.uniform(0.5, 2.0)
+    pressure_drop_rate = rng.uniform(0.00008, 0.00025)  
+    pressure_noise = rng.uniform(0.3, 1.5)  
 
     # Oil temperature (°C) - oil degradation
     base_oil_temp = rng.uniform(45.0, 65.0)
-    oil_temp_rate = rng.uniform(0.0003, 0.001)
-    oil_temp_noise = rng.uniform(0.1, 0.6)
+    oil_temp_rate = rng.uniform(0.0005, 0.0015)  
+    oil_temp_noise = rng.uniform(0.08, 0.4)
 
     # Oil contamination index (dimensionless)
     base_contamination = rng.uniform(0.5, 2.0)
-    contamination_growth = rng.uniform(0.00002, 0.00008)
-    contamination_noise = rng.uniform(0.01, 0.05)
+    contamination_growth = rng.uniform(0.00004, 0.00012)
+    contamination_noise = rng.uniform(0.008, 0.03)
 
     # Ram position deviation (mm) - misalignment
     base_ram_dev = rng.uniform(0.01, 0.05)
-    ram_dev_growth = rng.uniform(0.00001, 0.00005)
-    ram_dev_noise = rng.uniform(0.001, 0.005)
+    ram_dev_growth = rng.uniform(0.00002, 0.00008)
+    ram_dev_noise = rng.uniform(0.0008, 0.003)
 
     # Press force / tonnage (tons)
     base_force = rng.uniform(80.0, 120.0)
-    force_loss_rate = rng.uniform(0.00003, 0.0001)
-    force_noise = rng.uniform(0.3, 1.5)
+    force_loss_rate = rng.uniform(0.00005, 0.00015)
+    force_noise = rng.uniform(0.2, 1.0)
 
     # Frame / ram vibration (mm/s)
     base_vibration = rng.uniform(0.1, 0.5)
-    failure_vibration = rng.uniform(3.0, 8.0)
-    vibration_noise = rng.uniform(0.02, 0.1)
+    failure_vibration = rng.uniform(4.0, 10.0)  # Higher failure vibration
+    vibration_noise = rng.uniform(0.015, 0.07)
 
     # Hydraulic flow rate (L/min)
     base_flow = rng.uniform(90.0, 130.0)
-    flow_loss_rate = rng.uniform(0.00004, 0.00012)
-    flow_noise = rng.uniform(0.3, 1.2)
+    flow_loss_rate = rng.uniform(0.00006, 0.00018)
+    flow_noise = rng.uniform(0.2, 0.8)
 
     # Motor current (A)
     base_current = rng.uniform(30.0, 55.0)
-    current_growth_rate = rng.uniform(0.00005, 0.0002)
-    current_noise = rng.uniform(0.1, 0.6)
+    current_growth_rate = rng.uniform(0.00008, 0.0003)
+    current_noise = rng.uniform(0.08, 0.4)
 
 
     # SENSOR SIGNAL GENERATION
@@ -120,8 +120,8 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
 
     vibration = (
                     base_vibration
-                    + (failure_vibration - base_vibration) * (fraction ** 2) * critical_boost
-                    + rng.normal(0.0, vibration_noise * (1.0 + fraction), size=total_rul)
+                    + (failure_vibration - base_vibration) * (fraction ** 1.5) * critical_boost  # Faster exponential growth
+                    + rng.normal(0.0, vibration_noise * (1.0 + 0.5 * fraction), size=total_rul)
                 )
 
     flow_rate = (

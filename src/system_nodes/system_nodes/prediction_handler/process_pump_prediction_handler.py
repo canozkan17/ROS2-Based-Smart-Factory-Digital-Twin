@@ -10,8 +10,8 @@ Architecture:
 - Stage-2A Regressor: Specialized regressor for critical region (RUL <= 50)
 
 Decision Logic (with hysteresis):
-- SAFE → CRITICAL: crit_prob >= 0.6
-- CRITICAL → SAFE: crit_prob <= 0.2
+- SAFE -> CRITICAL: crit_prob >= 0.6
+- CRITICAL -> SAFE: crit_prob <= 0.2
 
 Optimized for Raspberry Pi deployment.
 """
@@ -283,8 +283,8 @@ def _compute_features() -> Optional[np.ndarray]:
         # Training uses per-machine normalization over ENTIRE lifecycle.
         # At runtime, we use GLOBAL min/max from training data as approximation.
         # This works because:
-        #   - Start of life: values near global min → low degradation_index
-        #   - End of life: values near global max → high degradation_index
+        #   - Start of life: values near global min -> low degradation_index
+        #   - End of life: values near global max -> high degradation_index
         
         if _feature_stats:
             vib_min = _feature_stats['vibration']['min']
