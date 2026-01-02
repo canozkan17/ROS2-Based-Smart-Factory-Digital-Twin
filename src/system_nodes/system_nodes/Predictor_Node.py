@@ -57,6 +57,11 @@ class Predictor_Node(Node):
         self.pump_rolling_window = 5                # minimum samples for rolling calculations (matches WINDOW_SHORT)
         self.predicted_rul_process_pump = None
 
+        # Hydraulic Press variables
+        self.hydraulic_press_history = []
+        self.hydraulic_press_rolling_window = 5
+        self.predicted_rul_hydraulic_press = None
+
         # Load models and features into memory
         process_pump_handler.load_models()
         hydraulic_press_handler.load_models()
@@ -81,6 +86,10 @@ class Predictor_Node(Node):
             if received_data.get("cycle") == 0:
                 self.pump_history = []          # reset history at new run / after maintenance
                 self.get_logger().info("Reset Process_Pump history for new run.")
+                try:
+                    process_pump_handler.reset_state()
+                except Exception:
+                    pass
 
             # update history and keep only last max_pump_history_length entries
             self.pump_history.append(received_data)
@@ -91,7 +100,7 @@ class Predictor_Node(Node):
                                         )
                 return
 
-            if len(self.pump_history) > 1000:       # for RPI memory limits
+            if len(self.pump_history) > 500:       # for RPI memory limits
                 self.pump_history.pop(0)
                 
             # Wait until enough history is collected
@@ -125,6 +134,46 @@ class Predictor_Node(Node):
         try: 
             received_data = json.loads(msg.data)
             self.get_logger().info(f"Received Hydraulic_Press message")
+
+            if received_data.get("cycle") == 0:
+                self.hydraulic_press_history = []          # reset history at new run / after maintenance
+                self.get_logger().info("Reset Hydraulic_Press history for new run.")
+                try:
+                    hydraulic_press_handler.reset_state()
+                except Exception:
+                    pass
+
+            # update history and keep only last max_hydraulic_press_history_length entries
+            self.hydraulic_press_history.append(received_data)
+            if len(self.hydraulic_press_history) < self.hydraulic_press_rolling_window:
+                self.get_logger().warning(
+                                            f"Not enough history for Hydraulic_Press: {len(self.hydraulic_press_history)}/{self.hydraulic_press_rolling_window}"
+                                        )
+                return
+
+            if len(self.hydraulic_press_history) > 500:       # for RPI memory limits
+                self.hydraulic_press_history.pop(0)
+                
+            # Wait until enough history is collected
+            if len(self.hydraulic_press_history) < self.hydraulic_press_rolling_window:
+                self.get_logger().warning(f"Not enough history for Hydraulic_Press: {len(self.hydraulic_press_history)}/{self.hydraulic_press_rolling_window}. ")
+                return None
+                
+            # WHERE MAGIC HAPPENS
+            prediction_result = hydraulic_press_handler.predict(self.hydraulic_press_history)
+            if isinstance(prediction_result, dict):
+                self.predicted_rul_hydraulic_press = prediction_result.get("rul_min")
+                prediction_payload = prediction_result
+            else:
+                self.get_logger().error("Invalid prediction output format")
+                return
+
+            self.publish_generated_data(
+                                            prediction_payload = prediction_payload,
+                                            cycle=received_data.get("cycle", -1),
+                                            machine="hydraulic_press"
+                                        )
+
         except json.JSONDecodeError as e:
             self.get_logger().error(f"User Input JSON parse error: {e}")
 

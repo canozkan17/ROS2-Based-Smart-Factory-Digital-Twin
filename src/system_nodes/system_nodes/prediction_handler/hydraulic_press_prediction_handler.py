@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
 """
 Hydraulic Press Prediction Handler
-================================
-RUL prediction using two-stage XGBoost models for hydraulic press machine.
+
+Multi-resolution RUL prediction pipeline for hydraulic press machine.
 
 Architecture:
-- BASE Model: XGBoost regressor for general RUL prediction
-- Stage-1 Classifier: Binary classifier detecting critical region (RUL <= 100)
-- Stage-2A Regressor: Specialized regressor for critical region (RUL <= 50)
+    Stage-0 Classifier: Regime detector (LONG_TERM vs NEAR_TERM)
+        Threshold: RUL <= 5000 minutes -> NEAR_TERM
+    
+    Base Model: Long-term RUL tracker (HistGradientBoostingRegressor)
+        Target: log1p(RUL_minutes / 60) -> hours in log scale
+        Used for: General health trend monitoring
+    
+    Stage-1 Classifier: Critical detector (NON_CRITICAL vs CRITICAL)
+        Threshold: RUL <= 600 minutes -> CRITICAL
+        Hysteresis: ENTER >= 0.6, EXIT <= 0.2
+    
+    Stage-2A Regressor: Critical RUL prediction
+        Target: log1p(RUL_minutes)
+        Range: 0 - 600 minutes
+        Used for: High-resolution prediction in critical regime
 
-Decision Logic (with hysteresis):
-- SAFE → CRITICAL: crit_prob >= 0.6
-- CRITICAL → SAFE: crit_prob <= 0.2
+Inference Flow:
+    Sensor data -> Stage-0 (regime) -> Stage-1 (critical check)
+    If CRITICAL: Stage-2A prediction
+    Else: Base Model prediction
 
 Optimized for Raspberry Pi deployment.
 """
@@ -26,19 +39,20 @@ from typing import Dict, Any, Optional, List
 import numpy as np
 
 
-# CONSTANTS - Must Match Training Exactly
-# Sensor names
-SENSORS = [
-                "hydraulic_pressure", "oil_temperature", "oil_contamination",
-                "ram_position_deviation", "press_force", "vibration",
-                "flow_rate", "motor_current"
-            ]
+SENSOR_COLUMNS = [
+                    "hydraulic_pressure",
+                    "oil_temperature",
+                    "oil_contamination",
+                    "ram_position_deviation",
+                    "press_force",
+                    "vibration",
+                    "flow_rate",
+                    "motor_current"
+                ]
 
-# Rolling window sizes (from training)
 WINDOW_SHORT = 5
 WINDOW_LONG = 20
 
-# Selected features (order matters - must match model training)
 SELECTED_FEATURES = [
                         "vibration_energy",
                         "vibration",
@@ -58,65 +72,80 @@ SELECTED_FEATURES = [
                         "motor_current_roll_std_20"
                     ]
 
-# Stage-1 Classifier thresholds (from training notebook)
-THRESH_ENTER = 0.6   # Enter critical state
-THRESH_EXIT = 0.2    # Exit critical state
+BASE_MODEL_FEATURES = [
+                        "vibration",
+                        "degradation_index",
+                        "press_force",
+                        "oil_contamination",
+                        "oil_temperature",
+                        "flow_rate",
+                        "force_pressure_coupling",
+                        "hydraulic_pressure",
+                        "motor_current"
+                    ]
 
-# Buffer size for rolling calculations
+STAGE2A_FEATURES = [
+                        "degradation_index",
+                        "vibration",
+                        "vibration_energy",
+                        "motor_current",
+                        "oil_temperature",
+                        "force_pressure_coupling",
+                        "press_force",
+                        "vibration_roll_std_20",
+                        "flow_rate_roll_std_20",
+                        "press_force_roll_std_20"
+                    ]
+
+STAGE0_THRESHOLD_MIN = 5000
+STAGE1_THRESHOLD_MIN = 600
+STAGE2A_MAX_RUL_MIN = 600
+
+THRESH_ENTER = 0.6
+THRESH_EXIT = 0.2
+
 MAX_BUFFER_SIZE = WINDOW_LONG + 10
 
 
-# GLOBAL STATE
-# Models (ONNX sessions or XGBoost objects)
+_stage0_classifier = None
 _base_model = None
 _stage1_classifier = None
 _stage2a_regressor = None
 
-# Feature normalization stats
 _feature_stats: Optional[Dict] = None
 
-# Data buffer for rolling window calculations
 _data_buffer: List[Dict[str, float]] = []
 _buffer_lock = threading.Lock()
 
-# Hysteresis state for classifier
 _in_critical_state = False
 
-# Module initialization flag
 _initialized = False
 
 
-# MODEL LOADING
 def _find_model_directory() -> Path:
-    """Locate the models_and_features/hydraulic_press  directory."""
+    """Locate the models_and_features/hydraulic_press directory."""
     base_dir = Path(__file__).parent.resolve()
     
-    # Search up the directory tree
     for parent in [base_dir] + list(base_dir.parents):
         candidate = parent / "models_and_features" / "hydraulic_press"
         if candidate.exists():
             return candidate
     
-    # Fallback for typical ROS2 workspace structure
-    # /workspace/install/pkg/lib/python3.x/site-packages/pkg/handler/
-    # Models are at /workspace/models_and_features/hydraulic_press/
     for parent in base_dir.parents:
         candidate = parent.parent.parent.parent.parent / "models_and_features" / "hydraulic_press"
         if candidate.exists():
             return candidate
     
-    raise FileNotFoundError(
-                                f"Cannot locate models_and_features/hydraulic_press from {base_dir}"
-                            )
+    raise FileNotFoundError(f"Cannot locate models_and_features/hydraulic_press from {base_dir}")
 
 
 def load_models() -> None:
     """
     Load all models and feature stats.
     Primary: ONNX Runtime (optimized for RPi)
-    Fallback: XGBoost JSON
+    Fallback: Joblib/XGBoost
     """
-    global _base_model, _stage1_classifier, _stage2a_regressor
+    global _stage0_classifier, _base_model, _stage1_classifier, _stage2a_regressor
     global _feature_stats, _initialized
     
     if _initialized:
@@ -125,37 +154,41 @@ def load_models() -> None:
     model_dir = _find_model_directory()
     print(f"[hydraulic_press_handler] Loading models from: {model_dir}")
     
-    # Load feature stats for normalization
     stats_path = model_dir / "hydraulic_press_feature_stats.json"
     if stats_path.exists():
-        with open(stats_path, 'r') as f:
+        with open(stats_path, "r") as f:
             _feature_stats = json.load(f)
-        print(f"[hydraulic_press_handler] Loaded feature stats")
+        print("[hydraulic_press_handler] Loaded feature stats")
     else:
-        print(f"[hydraulic_press_handler] WARNING: Feature stats not found, using defaults")
+        print("[hydraulic_press_handler] WARNING: Feature stats not found, using defaults")
         _feature_stats = {
-                            "vibration": {"min": 0.0, "max": 8.0},
-                            "temp_motor": {"min": 40.0, "max": 1000.0},
-                            "pressure": {"min": -100.0, "max": 10.0}
+                            "vibration": {"min": 0.0, "max": 10.0},
+                            "oil_temperature": {"min": 30.0, "max": 100.0},
+                            "hydraulic_pressure": {"min": 100.0, "max": 350.0},
+                            "oil_contamination": {"min": 0.0, "max": 100.0}
                         }
-    
-    # Try ONNX first (optimized for RPi)
+                    
     try:
         import onnxruntime as ort
         
-        # Session options optimized for RPi
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2
         opts.inter_op_num_threads = 1
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         
-        providers = ['CPUExecutionProvider']
+        providers = ["CPUExecutionProvider"]
+        
+        _stage0_classifier = ort.InferenceSession(
+                                                    str(model_dir / "hydraulic_press_stage0_classifier.onnx"),
+                                                    sess_options=opts,
+                                                    providers=providers
+                                                )
         
         _base_model = ort.InferenceSession(
-                                                str(model_dir / "hydraulic_press_base_model.onnx"),
-                                                sess_options=opts,
-                                                providers=providers
-                                            )
+                                            str(model_dir / "hydraulic_press_base_model.onnx"),
+                                            sess_options=opts,
+                                            providers=providers
+                                        )
         
         _stage1_classifier = ort.InferenceSession(
                                                     str(model_dir / "hydraulic_press_stage1_classifier.onnx"),
@@ -174,53 +207,51 @@ def load_models() -> None:
         return
         
     except ImportError:
-        print("[hydraulic_press_handler] ONNX Runtime not available, trying XGBoost")
+        print("[hydraulic_press_handler] ONNX Runtime not available, trying joblib/XGBoost")
     except Exception as e:
-        print(f"[hydraulic_press_handler] ONNX load failed: {e}, trying XGBoost")
+        print(f"[hydraulic_press_handler] ONNX load failed: {e}, trying joblib/XGBoost")
     
-    # Fallback to XGBoost JSON
     try:
-        from xgboost import XGBRegressor, XGBClassifier
+        import joblib
+        from xgboost import XGBClassifier, XGBRegressor
         
-        _base_model = XGBRegressor()
-        _base_model.load_model(str(model_dir / "hydraulic_press_base_model.json"))
-        
-        _stage1_classifier = XGBClassifier()
-        _stage1_classifier.load_model(str(model_dir / "hydraulic_press_stage1_classifier.json"))
-        
-        _stage2a_regressor = XGBRegressor()
-        _stage2a_regressor.load_model(str(model_dir / "hydraulic_press_stage2a_regressor.json"))
+        _stage0_classifier = joblib.load(str(model_dir / "hydraulic_press_stage0_classifier.pkl"))
+        _base_model = joblib.load(str(model_dir / "hydraulic_press_base_model.pkl"))
+        _stage1_classifier = joblib.load(str(model_dir / "hydraulic_press_stage1_classifier.pkl"))
+        _stage2a_regressor = joblib.load(str(model_dir / "hydraulic_press_stage2a_regressor.pkl"))
         
         _initialized = True
-        print("[hydraulic_press_handler] XGBoost JSON models loaded successfully")
+        print("[hydraulic_press_handler] Joblib models loaded successfully")
         return
         
     except Exception as e:
         raise RuntimeError(f"Failed to load models: {e}")
 
 
-
-# BUFFER MANAGEMENT
 def _add_to_buffer(sensor_data: Dict[str, Any]) -> None:
     """Add new sensor reading to rolling buffer."""
     global _data_buffer
     
     with _buffer_lock:
-        _data_buffer.append({
-                                'cycle': int(sensor_data.get('cycle', 0)),
-                                'vibration': float(sensor_data.get('vibration', 0.0)),
-                                'temp_motor': float(sensor_data.get('temp_motor', 0.0)),
-                                'pressure': float(sensor_data.get('pressure', 0.0)),
-                                'vib_motor': float(sensor_data.get('vib_motor', 0.0)),
-                            })
+        entry = {
+                    "cycle": int(sensor_data.get("cycle", 0)),
+                    "hydraulic_pressure": float(sensor_data.get("hydraulic_pressure", 0.0)),
+                    "oil_temperature": float(sensor_data.get("oil_temperature", 0.0)),
+                    "oil_contamination": float(sensor_data.get("oil_contamination", 0.0)),
+                    "ram_position_deviation": float(sensor_data.get("ram_position_deviation", 0.0)),
+                    "press_force": float(sensor_data.get("press_force", 0.0)),
+                    "vibration": float(sensor_data.get("vibration", 0.0)),
+                    "flow_rate": float(sensor_data.get("flow_rate", 0.0)),
+                    "motor_current": float(sensor_data.get("motor_current", 0.0))
+                }
+        _data_buffer.append(entry)
         
-        # Trim to max size
         if len(_data_buffer) > MAX_BUFFER_SIZE:
             _data_buffer = _data_buffer[-MAX_BUFFER_SIZE:]
 
 
 def reset_state() -> None:
-    """Reset all state (call on new job/machine)."""
+    """Reset all state for new job or after maintenance."""
     global _data_buffer, _in_critical_state
     
     with _buffer_lock:
@@ -231,289 +262,350 @@ def reset_state() -> None:
 
 
 def _sync_buffer_from_history(history: List[Dict[str, Any]]) -> None:
-    """
-    Sync internal buffer from Predictor_Node's history.
-    
-    This handles the case where Predictor_Node maintains its own history
-    and passes it to the handler. We take the last MAX_BUFFER_SIZE entries.
-    
-    Also handles non-sequential cycles by using the data as-is.
-    Rolling calculations will work on available samples.
-    """
+    """Sync internal buffer from Predictor_Node history."""
     global _data_buffer
     
     with _buffer_lock:
-        # Take last N entries from history
         recent = history[-MAX_BUFFER_SIZE:] if len(history) > MAX_BUFFER_SIZE else history
         
         _data_buffer = []
         for d in recent:
-            _data_buffer.append({
-                                    'cycle': int(d.get('cycle', 0)),
-                                    'vibration': float(d.get('vibration', 0.0)),
-                                    'temp_motor': float(d.get('temp_motor', 0.0)),
-                                    'pressure': float(d.get('pressure', 0.0)),
-                                    'vib_motor': float(d.get('vib_motor', 0.0)),
-                                })
+            entry = {
+                        "cycle": int(d.get("cycle", 0)),
+                        "hydraulic_pressure": float(d.get("hydraulic_pressure", 0.0)),
+                        "oil_temperature": float(d.get("oil_temperature", 0.0)),
+                        "oil_contamination": float(d.get("oil_contamination", 0.0)),
+                        "ram_position_deviation": float(d.get("ram_position_deviation", 0.0)),
+                        "press_force": float(d.get("press_force", 0.0)),
+                        "vibration": float(d.get("vibration", 0.0)),
+                        "flow_rate": float(d.get("flow_rate", 0.0)),
+                        "motor_current": float(d.get("motor_current", 0.0))
+                    }
+            _data_buffer.append(entry)
 
 
-
-# FEATURE ENGINEERING
-def _compute_features() -> Optional[np.ndarray]:
+def _compute_features() -> Optional[Dict[str, np.ndarray]]:
     """
-    Compute features from buffer matching training exactly.
+    Compute all features from buffer matching training exactly.
     
-    Training Feature Engineering Summary:
-    - degradation_index: Per-machine normalized (vib + temp + pressure_inv) / 3
-    - vibration_energy: rolling_mean(vibration, 5) ** 2
-    - vibration: raw value
-    - temp_motor: raw value
-    - pressure: raw value
-    
-    Returns:
-        Feature array shape (1, 5) or None if insufficient data
+    Returns dictionary with feature arrays for each model:
+        - selected_features: Full feature set (16 features)
+        - base_model_features: Subset for base model (9 features)
+        - stage2a_features: Subset for stage-2a (10 features)
     """
     with _buffer_lock:
         if len(_data_buffer) < 1:
             return None
         
-        # Convert buffer to arrays for efficient computation
         n = len(_data_buffer)
-        vibration = np.array([d['vibration'] for d in _data_buffer])
-        temp_motor = np.array([d['temp_motor'] for d in _data_buffer])
-        pressure = np.array([d['pressure'] for d in _data_buffer])
         
-        # Latest values (raw features)
-        latest_vib = vibration[-1]
-        latest_temp = temp_motor[-1]
-        latest_pres = pressure[-1]
+        hydraulic_pressure = np.array([d["hydraulic_pressure"] for d in _data_buffer])
+        oil_temperature = np.array([d["oil_temperature"] for d in _data_buffer])
+        oil_contamination = np.array([d["oil_contamination"] for d in _data_buffer])
+        ram_position_deviation = np.array([d["ram_position_deviation"] for d in _data_buffer])
+        press_force = np.array([d["press_force"] for d in _data_buffer])
+        vibration = np.array([d["vibration"] for d in _data_buffer])
+        flow_rate = np.array([d["flow_rate"] for d in _data_buffer])
+        motor_current = np.array([d["motor_current"] for d in _data_buffer])
         
-        # vibration_energy 
-        # Training: grouped['vibration'].rolling(window=5, min_periods=1).mean() ** 2
-        window = min(WINDOW_SHORT, n)
-        vib_roll_mean = np.mean(vibration[-window:])
+        latest_hydraulic_pressure = hydraulic_pressure[-1]
+        latest_oil_temperature = oil_temperature[-1]
+        latest_oil_contamination = oil_contamination[-1]
+        latest_press_force = press_force[-1]
+        latest_vibration = vibration[-1]
+        latest_flow_rate = flow_rate[-1]
+        latest_motor_current = motor_current[-1]
+        
+        window_short = min(WINDOW_SHORT, n)
+        vib_roll_mean = np.mean(vibration[-window_short:])
         vibration_energy = vib_roll_mean ** 2
         
-        # degradation_index 
-        # Training uses per-machine normalization over ENTIRE lifecycle.
-        # At runtime, we use GLOBAL min/max from training data as approximation.
-        # This works because:
-        #   - Start of life: values near global min → low degradation_index
-        #   - End of life: values near global max → high degradation_index
+        window_long = min(WINDOW_LONG, n)
         
-        if _feature_stats:
-            vib_min = _feature_stats['vibration']['min']
-            vib_max = _feature_stats['vibration']['max']
-            temp_min = _feature_stats['temp_motor']['min']
-            temp_max = _feature_stats['temp_motor']['max']
-            pres_min = _feature_stats['pressure']['min']
-            pres_max = _feature_stats['pressure']['max']
+        def rolling_std(arr, window):
+            if len(arr) < 2:
+                return 0.0
+            window_data = arr[-window:]
+            return float(np.std(window_data, ddof=1)) if len(window_data) > 1 else 0.0
+        
+        vibration_roll_std_20 = rolling_std(vibration, window_long)
+        flow_rate_roll_std_20 = rolling_std(flow_rate, window_long)
+        press_force_roll_std_20 = rolling_std(press_force, window_long)
+        oil_temperature_roll_std_20 = rolling_std(oil_temperature, window_long)
+        motor_current_roll_std_20 = rolling_std(motor_current, window_long)
+        ram_position_deviation_roll_std_20 = rolling_std(ram_position_deviation, window_long)
+        
+        if latest_hydraulic_pressure > 0:
+            force_pressure_coupling = latest_press_force / latest_hydraulic_pressure
+            force_pressure_coupling = float(np.clip(force_pressure_coupling, 0, 10))
         else:
-            # Fallback defaults
-            vib_min, vib_max = 0.0, 8.0
-            temp_min, temp_max = 40.0, 1000.0
-            pres_min, pres_max = -100.0, 10.0
+            force_pressure_coupling = 1.0
         
-        # Normalize each sensor (matching training formula)
-        eps = 1e-6
-        vib_norm = (latest_vib - vib_min) / (vib_max - vib_min + eps)
-        temp_norm = (latest_temp - temp_min) / (temp_max - temp_min + eps)
-        # Pressure is INVERTED in training (lower pressure = more degraded)
-        pres_norm = 1.0 - (latest_pres - pres_min) / (pres_max - pres_min + eps)
+        eps = 1e-9
         
-        # Clip to [0, 1] range
-        vib_norm = np.clip(vib_norm, 0.0, 1.0)
-        temp_norm = np.clip(temp_norm, 0.0, 1.0)
-        pres_norm = np.clip(pres_norm, 0.0, 1.0)
+        vib_min = vibration.min()
+        vib_max = vibration.max()
+        vib_norm = (latest_vibration - vib_min) / (vib_max - vib_min + eps) if vib_max > vib_min else 0.0
         
-        degradation_index = (vib_norm + temp_norm + pres_norm) / 3.0
+        temp_min = oil_temperature.min()
+        temp_max = oil_temperature.max()
+        temp_norm = (latest_oil_temperature - temp_min) / (temp_max - temp_min + eps) if temp_max > temp_min else 0.0
         
-        #  Build feature vector 
-        # Order MUST match SELECTED_FEATURES and model training
-        features = np.array([
-                                degradation_index,              # 0: degradation_index
-                                vibration_energy,               # 1: vibration_energy
-                                latest_vib,                     # 2: vibration
-                                latest_temp,                    # 3: temp_motor
-                                latest_pres                     # 4: pressure
-                            ], dtype=np.float32).reshape(1, -1)
+        pres_min = hydraulic_pressure.min()
+        pres_max = hydraulic_pressure.max()
+        pres_norm = 1.0 - (latest_hydraulic_pressure - pres_min) / (pres_max - pres_min + eps) if pres_max > pres_min else 0.0
         
-        return features
+        contam_min = oil_contamination.min()
+        contam_max = oil_contamination.max()
+        contam_norm = (latest_oil_contamination - contam_min) / (contam_max - contam_min + eps) if contam_max > contam_min else 0.0
+        
+        vib_norm = float(np.clip(vib_norm, 0.0, 1.0))
+        temp_norm = float(np.clip(temp_norm, 0.0, 1.0))
+        pres_norm = float(np.clip(pres_norm, 0.0, 1.0))
+        contam_norm = float(np.clip(contam_norm, 0.0, 1.0))
+        
+        degradation_index = (vib_norm + temp_norm + pres_norm + contam_norm) / 4.0
+        
+        feature_dict = {
+                            "vibration_energy": vibration_energy,
+                            "vibration": latest_vibration,
+                            "degradation_index": degradation_index,
+                            "flow_rate_roll_std_20": flow_rate_roll_std_20,
+                            "press_force": latest_press_force,
+                            "oil_contamination": latest_oil_contamination,
+                            "oil_temperature": latest_oil_temperature,
+                            "press_force_roll_std_20": press_force_roll_std_20,
+                            "vibration_roll_std_20": vibration_roll_std_20,
+                            "flow_rate": latest_flow_rate,
+                            "force_pressure_coupling": force_pressure_coupling,
+                            "hydraulic_pressure": latest_hydraulic_pressure,
+                            "motor_current": latest_motor_current,
+                            "ram_position_deviation_roll_std_20": ram_position_deviation_roll_std_20,
+                            "oil_temperature_roll_std_20": oil_temperature_roll_std_20,
+                            "motor_current_roll_std_20": motor_current_roll_std_20
+                        }
+        
+        selected_feature_values = [feature_dict[f] for f in SELECTED_FEATURES]
+        selected_features_array = np.array(selected_feature_values, dtype=np.float32).reshape(1, -1)
+        
+        base_feature_values = [feature_dict[f] for f in BASE_MODEL_FEATURES]
+        base_features_array = np.array(base_feature_values, dtype=np.float32).reshape(1, -1)
+        
+        stage2a_feature_values = [feature_dict[f] for f in STAGE2A_FEATURES]
+        stage2a_features_array = np.array(stage2a_feature_values, dtype=np.float32).reshape(1, -1)
+        
+        return {
+                    "selected_features": selected_features_array,
+                    "base_model_features": base_features_array,
+                    "stage2a_features": stage2a_features_array
+                }
 
 
-
-# INFERENCE
-def _run_inference_onnx(X: np.ndarray) -> tuple:
-    """Run inference using ONNX Runtime."""
-    input_name = _base_model.get_inputs()[0].name           # type: ignore
+def _run_stage0_onnx(X: np.ndarray) -> float:
+    """Run Stage-0 regime classifier using ONNX."""
+    input_name = _stage0_classifier.get_inputs()[0].name
+    outputs = _stage0_classifier.run(None, {input_name: X})
     
-    # Stage-1: Classifier
-    stg1_outputs = _stage1_classifier.run(None, {input_name: X})  # type: ignore
-    label = int(np.asarray(stg1_outputs[0]).squeeze())
-    
-    # Extract probability (output[1] is probabilities for XGBoost classifier)
     try:
-        proba_array = np.asarray(stg1_outputs[1]).squeeze()
+        proba_array = np.asarray(outputs[1]).squeeze()
         if proba_array.ndim == 0:
-            # Scalar output
-            crit_prob = float(proba_array)
+            near_term_prob = float(proba_array)
         elif proba_array.size >= 2:
-            # [prob_class0, prob_class1] - we want class 1 (critical)
-            crit_prob = float(proba_array[1])
+            near_term_prob = float(proba_array[1])
         else:
-            crit_prob = float(label)
+            near_term_prob = float(proba_array)
     except Exception:
-        crit_prob = float(label)
+        label = int(np.asarray(outputs[0]).squeeze())
+        near_term_prob = float(label)
     
-    # BASE Model
-    base_rul = float(_base_model.run(None, {input_name: X})[0].squeeze())   # type: ignore
-    
-    # Stage-2A Regressor
-    stg2a_rul = float(_stage2a_regressor.run(None, {input_name: X})[0].squeeze())   # type: ignore
-    
-    return crit_prob, base_rul, stg2a_rul
+    return near_term_prob
 
 
-def _run_inference_xgb(X: np.ndarray) -> tuple:
-    """Run inference using XGBoost directly."""
-    # Stage-1: Classifier
-    crit_prob = float(_stage1_classifier.predict_proba(X)[0, 1])    # type: ignore
-    
-    # BASE Model
-    base_rul = float(_base_model.predict(X)[0])  # type: ignore
-    
-    # Stage-2A Regressor
-    stg2a_rul = float(_stage2a_regressor.predict(X)[0]) # type: ignore
-    
-    return crit_prob, base_rul, stg2a_rul
+def _run_stage0_sklearn(X: np.ndarray) -> float:
+    """Run Stage-0 regime classifier using sklearn/XGBoost."""
+    near_term_prob = float(_stage0_classifier.predict_proba(X)[0, 1])
+    return near_term_prob
 
 
+def _run_base_model_onnx(X: np.ndarray) -> float:
+    """Run Base Model using ONNX. Returns RUL in minutes."""
+    input_name = _base_model.get_inputs()[0].name
+    pred_log_hours = float(_base_model.run(None, {input_name: X})[0].squeeze())
+    pred_hours = np.expm1(pred_log_hours)
+    pred_minutes = pred_hours * 60.0
+    return pred_minutes
 
-# MAIN PREDICTION FUNCTION
+
+def _run_base_model_sklearn(X: np.ndarray) -> float:
+    """Run Base Model using sklearn. Returns RUL in minutes."""
+    pred_log_hours = float(_base_model.predict(X)[0])
+    pred_hours = np.expm1(pred_log_hours)
+    pred_minutes = pred_hours * 60.0
+    return pred_minutes
+
+
+def _run_stage1_onnx(X: np.ndarray) -> float:
+    """Run Stage-1 critical classifier using ONNX."""
+    input_name = _stage1_classifier.get_inputs()[0].name
+    outputs = _stage1_classifier.run(None, {input_name: X})
+    
+    try:
+        proba_array = np.asarray(outputs[1]).squeeze()
+        if proba_array.ndim == 0:
+            critical_prob = float(proba_array)
+        elif proba_array.size >= 2:
+            critical_prob = float(proba_array[1])
+        else:
+            critical_prob = float(proba_array)
+    except Exception:
+        label = int(np.asarray(outputs[0]).squeeze())
+        critical_prob = float(label)
+    
+    return critical_prob
+
+
+def _run_stage1_sklearn(X: np.ndarray) -> float:
+    """Run Stage-1 critical classifier using sklearn/XGBoost."""
+    critical_prob = float(_stage1_classifier.predict_proba(X)[0, 1])
+    return critical_prob
+
+
+def _run_stage2a_onnx(X: np.ndarray) -> float:
+    """Run Stage-2A critical regressor using ONNX. Returns RUL in minutes."""
+    input_name = _stage2a_regressor.get_inputs()[0].name
+    pred_log = float(_stage2a_regressor.run(None, {input_name: X})[0].squeeze())
+    pred_minutes = np.expm1(pred_log)
+    pred_minutes = float(np.clip(pred_minutes, 0.0, STAGE2A_MAX_RUL_MIN))
+    return pred_minutes
+
+
+def _run_stage2a_sklearn(X: np.ndarray) -> float:
+    """Run Stage-2A critical regressor using sklearn/XGBoost. Returns RUL in minutes."""
+    pred_log = float(_stage2a_regressor.predict(X)[0])
+    pred_minutes = np.expm1(pred_log)
+    pred_minutes = float(np.clip(pred_minutes, 0.0, STAGE2A_MAX_RUL_MIN))
+    return pred_minutes
+
+
 def predict(sensor_data) -> Dict[str, Any]:
     """
     Main prediction function called by Predictor_Node.
     
-    Implements two-stage prediction with hysteresis:
-    1. Stage-1 Classifier determines if machine is in critical region
-    2. If critical: use Stage-2A specialized regressor
-       If safe: use BASE general regressor
-    3. Hysteresis prevents oscillation between states
+    Implements multi-resolution RUL prediction:
+        Stage-0: Regime detection (LONG_TERM vs NEAR_TERM)
+        Stage-1: Critical detection with hysteresis
+        Base Model: Long-term RUL tracking
+        Stage-2A: Critical regime high-resolution prediction
     
     Args:
         sensor_data: Either:
-            - Dict with keys: vibration, temp_motor, pressure, vib_motor, cycle
-            - List[Dict] - history buffer from Predictor_Node (uses last entry)
+            - Dict with sensor keys
+            - List[Dict] - history buffer from Predictor_Node
     
     Returns:
         Dict with keys:
             - rul_min: float (predicted RUL in minutes)
             - unit: str ('min')
-            - stage: str ('BASE' or 'STAGE_2A')
+            - stage: str ('BASE', 'STAGE_2A', etc.)
             - crit_prob: float (probability of critical state)
+            - regime: str ('LONG_TERM' or 'NEAR_TERM')
     """
     global _in_critical_state
     
-    # Ensure models are loaded
     if not _initialized:
         load_models()
     
-    # Handle both single dict and list of dicts
     if isinstance(sensor_data, list):
         if len(sensor_data) == 0:
             return {
-                        'rul_min': -1.0,
-                        'unit': 'min',
-                        'stage': 'NO_DATA',
-                        'crit_prob': 0.0
+                        "rul_min": -1.0,
+                        "unit": "min",
+                        "stage": "NO_DATA",
+                        "crit_prob": 0.0,
+                        "regime": "UNKNOWN"
                     }
-        # Use the entire history for rolling calculations
         _sync_buffer_from_history(sensor_data)
         current_data = sensor_data[-1]
     else:
         current_data = sensor_data
-        # Add single data point to buffer
         _add_to_buffer(current_data)
     
-    # Check for reset condition (new job starts at cycle 0)
-    current_cycle = current_data.get('cycle', 0)
+    current_cycle = current_data.get("cycle", 0)
     if current_cycle == 0:
         reset_state()
         _add_to_buffer(current_data)
     
-    # Compute features
-    X = _compute_features()
+    feature_arrays = _compute_features()
     
-    if X is None:
+    if feature_arrays is None:
         return {
-                    'rul_min': -1.0,
-                    'unit': 'min',
-                    'stage': 'INSUFFICIENT_DATA',
-                    'crit_prob': 0.0
+                    "rul_min": -1.0,
+                    "unit": "min",
+                    "stage": "INSUFFICIENT_DATA",
+                    "crit_prob": 0.0,
+                    "regime": "UNKNOWN"
                 }
     
-    # Run inference
+    X_selected = feature_arrays["selected_features"]
+    X_base = feature_arrays["base_model_features"]
+    X_stage2a = feature_arrays["stage2a_features"]
+    
     try:
-        # Check if using ONNX (has 'run' method) or XGBoost
-        if hasattr(_base_model, 'run'):
-            crit_prob, base_rul, stg2a_rul = _run_inference_onnx(X)
+        is_onnx = hasattr(_stage0_classifier, "run")
+        
+        if is_onnx:
+            near_term_prob = _run_stage0_onnx(X_selected)
         else:
-            crit_prob, base_rul, stg2a_rul = _run_inference_xgb(X)
+            near_term_prob = _run_stage0_sklearn(X_selected)
+        
+        regime = "NEAR_TERM" if near_term_prob >= 0.5 else "LONG_TERM"
+        
+        if is_onnx:
+            critical_prob = _run_stage1_onnx(X_selected)
+        else:
+            critical_prob = _run_stage1_sklearn(X_selected)
+        
+        if not _in_critical_state:
+            if critical_prob >= THRESH_ENTER:
+                _in_critical_state = True
+        else:
+            if critical_prob <= THRESH_EXIT:
+                _in_critical_state = False
+        
+        if _in_critical_state:
+            if is_onnx:
+                final_rul = _run_stage2a_onnx(X_stage2a)
+            else:
+                final_rul = _run_stage2a_sklearn(X_stage2a)
+            stage = "STAGE_2A"
+        else:
+            if is_onnx:
+                final_rul = _run_base_model_onnx(X_base)
+            else:
+                final_rul = _run_base_model_sklearn(X_base)
+            stage = "BASE"
+        
+        final_rul = max(0.0, final_rul)
+        
+        return {
+                    "rul_min": float(final_rul),
+                    "unit": "min",
+                    "stage": stage,
+                    "crit_prob": float(np.clip(critical_prob, 0.0, 1.0)),
+                    "regime": regime
+                }
+        
     except Exception as e:
         print(f"[hydraulic_press_handler] Inference error: {e}")
         return {
-                    'rul_min': -1.0,
-                    'unit': 'min',
-                    'stage': 'ERROR',
-                    'crit_prob': 0.0
+                    "rul_min": -1.0,
+                    "unit": "min",
+                    "stage": "ERROR",
+                    "crit_prob": 0.0,
+                    "regime": "UNKNOWN"
                 }
-    
-    # Decision Logic with Hysteresis 
-    # Training notebook thresholds:
-    #   THRESH_ENTER = 0.6 (enter critical)
-    #   THRESH_EXIT = 0.2 (exit critical)
-    #
-    # State machine:
-    #   SAFE state:
-    #    - Stay SAFE if crit_prob < THRESH_ENTER
-    #    - Switch to CRITICAL if crit_prob >= THRESH_ENTER
-    # CRITICAL state:
-    #   - Stay CRITICAL if crit_prob > THRESH_EXIT
-    #   - Switch to SAFE if crit_prob <= THRESH_EXIT
-    
-    if not _in_critical_state:
-        # Currently in SAFE state
-        if crit_prob >= THRESH_ENTER:
-            _in_critical_state = True
-            stage = "STAGE_2A"
-            final_rul = stg2a_rul
-        else:
-            stage = "BASE"
-            final_rul = base_rul
-    else:
-        # Currently in CRITICAL state
-        if crit_prob <= THRESH_EXIT:
-            _in_critical_state = False
-            stage = "BASE"
-            final_rul = base_rul
-        else:
-            stage = "STAGE_2A"
-            final_rul = stg2a_rul
-    
-    # Ensure RUL is non-negative
-    final_rul = max(0.0, final_rul)
-    
-    return {
-                'rul_min': float(final_rul),
-                'unit': 'min',
-                'stage': stage,
-                'crit_prob': float(np.clip(crit_prob, 0.0, 1.0))
-            }
 
 
-
-# MODULE INITIALIZATION
-# Attempt to pre-load models on import
 try:
     load_models()
 except Exception as e:
