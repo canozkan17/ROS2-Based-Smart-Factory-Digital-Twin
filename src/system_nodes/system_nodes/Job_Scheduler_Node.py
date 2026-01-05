@@ -42,7 +42,8 @@ class Job_Scheduler_Node(Node):
 
         # Subscription to Maintenance Feedback
         self.subscription_maintenance_feedback = {
-                                                    self.create_subscription(String, 'Maintenance_Feedback/process_pump', self.listener_maintenance_feedback_callback, 10)
+                                                    self.create_subscription(String, 'Maintenance_Feedback/process_pump', self.listener_maintenance_feedback_callback, 10),
+                                                    self.create_subscription(String, 'Maintenance_Feedback/hydraulic_press', self.listener_maintenance_feedback_callback, 10)
                                                 }
 
 
@@ -230,6 +231,12 @@ class Job_Scheduler_Node(Node):
         data = json.loads(msg.data)
         machine = data["machine"]
 
+        self.get_logger().info(
+            f"[TEMP:DEBUG] MAINTENANCE_QUEUE_RECEIVED: machine={machine}, "
+            f"recovery_time_min={data.get('recovery_time_min', 0)}, "
+            f"remaining_min={data.get('remaining_min', 0)}"
+        )
+
         self.maintenance_queue_details[machine] = data
         self.get_logger().info(f"{machine} added to maintenance queue")
         self.maintenance_required = True
@@ -246,11 +253,20 @@ class Job_Scheduler_Node(Node):
         machine = feedback_data["machine"]
         status = feedback_data["status"]
 
+        self.get_logger().info(
+            f"[TEMP:DEBUG] MAINTENANCE_FEEDBACK_RECEIVED: machine={machine}, status={status}"
+        )
+
         if status == "READY" and machine in self.maintenance_queue_details:
-            self.maintenance_required = False
-            self.maintenance_completed = True
-            
+            # remove the machine from maintenance queue details
+            del self.maintenance_queue_details[machine]
+            self.get_logger().info(f"[TEMP:DEBUG] MACHINE_READY: {machine} removed from maintenance queue, resuming operations")
             self.get_logger().info(f"{machine} maintenance completed and removed from maintenance queue")
+
+            if not self.maintenance_queue_details:
+                self.maintenance_required = False
+                self.maintenance_completed = True
+            
             self.schedule_conducter()
 
     # Callback for Completed
@@ -324,8 +340,6 @@ class Job_Scheduler_Node(Node):
         # Handling maintenance completed logic
         if self.maintenance_completed:
             # remove machine from maintenance queue details
-            for machine in list(self.maintenance_queue_details.keys()):
-                del self.maintenance_queue_details[machine]
             self.maintenance_completed = False
             ready_tasks = self.load_balancer()
             if ready_tasks:

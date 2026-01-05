@@ -136,6 +136,7 @@ class Predictor_Node(Node):
             self.get_logger().info(f"Received Hydraulic_Press message")
 
             if received_data.get("cycle") == 0:
+                self.get_logger().info(f"[TEMP:DEBUG] PREDICTOR cycle==0 detected, resetting history (was {len(self.hydraulic_press_history)} entries)")
                 self.hydraulic_press_history = []          # reset history at new run / after maintenance
                 self.get_logger().info("Reset Hydraulic_Press history for new run.")
                 try:
@@ -158,9 +159,15 @@ class Predictor_Node(Node):
             if len(self.hydraulic_press_history) < self.hydraulic_press_rolling_window:
                 self.get_logger().warning(f"Not enough history for Hydraulic_Press: {len(self.hydraulic_press_history)}/{self.hydraulic_press_rolling_window}. ")
                 return None
+            
+            # Debug: log history range before prediction
+            first_cycle = self.hydraulic_press_history[0].get("cycle", -1)
+            last_cycle = self.hydraulic_press_history[-1].get("cycle", -1)
+            self.get_logger().info(f"[TEMP:DEBUG] PREDICTOR calling handler.predict() with history len={len(self.hydraulic_press_history)}, cycles {first_cycle}-{last_cycle}")
                 
             # WHERE MAGIC HAPPENS
             prediction_result = hydraulic_press_handler.predict(self.hydraulic_press_history)
+            
             if isinstance(prediction_result, dict):
                 self.predicted_rul_hydraulic_press = prediction_result.get("rul_min")
                 prediction_payload = prediction_result

@@ -45,7 +45,6 @@ class Machine_Process_Pump_Sensor_Node(Node):
         # Publisher for maintenance feedback 
         self.publisher_maintenance_feedback = self.create_publisher(String, "Maintenance_Feedback/process_pump", 10)
             
-        self.get_logger().info("Real degradation and noise patterns loaded.")
 
         # Variable set-up
         self.total_ran_cycles = 0 # real cycle count in minutes
@@ -184,8 +183,8 @@ class Machine_Process_Pump_Sensor_Node(Node):
 
         if self.simulation_mode == "REALTIME":
             self.get_logger().info(
-                f"REALTIME maintenance started for {self.maintenance_cycles_remaining} cycles"
-            )
+                                        f"REALTIME maintenance started for {self.maintenance_cycles_remaining} cycles"
+                                    )
 
             self.maintenance_realtime_timer = self.create_timer(
                                                                     self.maintenance_cycles_remaining * 60.0,
@@ -194,6 +193,10 @@ class Machine_Process_Pump_Sensor_Node(Node):
                                                                 )
 
         elif self.simulation_mode == "FAST":
+            self.get_logger().info(
+                                        f"FAST maintenance started for {self.maintenance_cycles_remaining} cycles"
+                                    )
+
             while self.maintenance_cycles_remaining > 0:
                 self.maintenance_cycles_remaining -= 1
                 time.sleep(0.01)  # small sleep to simulate time passage

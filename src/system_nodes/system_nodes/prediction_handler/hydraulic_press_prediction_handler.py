@@ -6,11 +6,11 @@ Multi-resolution RUL prediction pipeline for hydraulic press machine.
 
 Architecture:
     Stage-0 Classifier: Regime detector (LONG_TERM vs NEAR_TERM)
-        Threshold: RUL <= 5000 minutes -> NEAR_TERM
+        Threshold: RUL <= 50000 minutes -> NEAR_TERM
     
-    Base Model: Long-term RUL tracker (HistGradientBoostingRegressor)
-        Target: log1p(RUL_minutes / 60) -> hours in log scale
-        Used for: General health trend monitoring
+    Base Model: Long-term RUL tracker (XGBRegressor)
+        Target: log1p(RUL_hours) where RUL_hours = RUL_minutes / 60
+        Used for: General health trend monitoring in Long-Life scenario
     
     Stage-1 Classifier: Critical detector (NON_CRITICAL vs CRITICAL)
         Threshold: RUL <= 600 minutes -> CRITICAL
@@ -22,82 +22,106 @@ Architecture:
         Used for: High-resolution prediction in critical regime
 
 Inference Flow:
-    Sensor data -> Stage-0 (regime) -> Stage-1 (critical check)
-    If CRITICAL: Stage-2A prediction
-    Else: Base Model prediction
+    Long-Life Scenario: Stage-0 (regime) -> Base Model
+    Short-Life Scenario: Stage-1 (critical check) -> Stage-2A
 
 Optimized for Raspberry Pi deployment.
 """
 
 from __future__ import annotations
-
 import json
 import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-
 import numpy as np
 
 
+# Sensor-RUL lookup table for interpolation-based estimation
+_sensor_lookup: Optional[Dict] = None
+
+
 SENSOR_COLUMNS = [
-                    "hydraulic_pressure",
-                    "oil_temperature",
-                    "oil_contamination",
-                    "ram_position_deviation",
-                    "press_force",
-                    "vibration",
-                    "flow_rate",
-                    "motor_current"
-                ]
+    "hydraulic_pressure",
+    "oil_temperature",
+    "oil_contamination",
+    "ram_position_deviation",
+    "press_force",
+    "vibration",
+    "flow_rate",
+    "motor_current"
+]
 
 WINDOW_SHORT = 5
 WINDOW_LONG = 20
 
+# SELECTED_FEATURES must match training notebook's selected_hydraulic_press_features.json EXACTLY
+# These 20 features were selected during training via importance filtering
 SELECTED_FEATURES = [
-                        "vibration_energy",
-                        "vibration",
-                        "degradation_index",
-                        "flow_rate_roll_std_20",
-                        "press_force",
-                        "oil_contamination",
-                        "oil_temperature",
-                        "press_force_roll_std_20",
-                        "vibration_roll_std_20",
-                        "flow_rate",
-                        "force_pressure_coupling",
-                        "hydraulic_pressure",
-                        "motor_current",
-                        "ram_position_deviation_roll_std_20",
-                        "oil_temperature_roll_std_20",
-                        "motor_current_roll_std_20"
-                    ]
+    "vibration_roll_std_20",
+    "degradation_index",
+    "vibration",
+    "vibration_energy",
+    "vibration_dev_long",
+    "hydraulic_pressure_dev_long",
+    "flow_rate_roll_mean_5",
+    "oil_temperature_roll_std_20",
+    "force_pressure_coupling",
+    "press_force_roll_mean_5",
+    "flow_rate_roll_mean_20",
+    "hydraulic_pressure_roll_mean_5",
+    "flow_rate",
+    "motor_current_roll_mean_20",
+    "oil_temperature_roll_mean_5",
+    "oil_temperature_roll_mean_20",
+    "vibration_volatility_surge",
+    "press_force_roll_mean_20",
+    "press_force",
+    "motor_current"
+]
 
+# STAGE0_FEATURES: same as SELECTED_FEATURES (20 features)
+STAGE0_FEATURES = SELECTED_FEATURES.copy()
+
+# BASE_MODEL_FEATURES: selected_features minus roll_std/energy/volatility_surge (16 features)
 BASE_MODEL_FEATURES = [
-                        "vibration",
-                        "degradation_index",
-                        "press_force",
-                        "oil_contamination",
-                        "oil_temperature",
-                        "flow_rate",
-                        "force_pressure_coupling",
-                        "hydraulic_pressure",
-                        "motor_current"
-                    ]
+    "degradation_index",
+    "vibration",
+    "vibration_dev_long",
+    "hydraulic_pressure_dev_long",
+    "flow_rate_roll_mean_5",
+    "force_pressure_coupling",
+    "press_force_roll_mean_5",
+    "flow_rate_roll_mean_20",
+    "hydraulic_pressure_roll_mean_5",
+    "flow_rate",
+    "motor_current_roll_mean_20",
+    "oil_temperature_roll_mean_5",
+    "oil_temperature_roll_mean_20",
+    "press_force_roll_mean_20",
+    "press_force",
+    "motor_current"
+]
 
+# STAGE2A_FEATURES: priority keywords from training (14 features)
+# vibration, motor_current, oil_temperature, pressure, force_pressure
 STAGE2A_FEATURES = [
-                        "degradation_index",
-                        "vibration",
-                        "vibration_energy",
-                        "motor_current",
-                        "oil_temperature",
-                        "force_pressure_coupling",
-                        "press_force",
-                        "vibration_roll_std_20",
-                        "flow_rate_roll_std_20",
-                        "press_force_roll_std_20"
-                    ]
+    "vibration_roll_std_20",
+    "vibration",
+    "vibration_energy",
+    "vibration_dev_long",
+    "vibration_volatility_surge",
+    "motor_current",
+    "motor_current_roll_mean_20",
+    "oil_temperature_roll_std_20",
+    "oil_temperature_roll_mean_5",
+    "oil_temperature_roll_mean_20",
+    "hydraulic_pressure_roll_mean_5",
+    "hydraulic_pressure_dev_long",
+    "force_pressure_coupling",
+    "press_force"
+]
 
-STAGE0_THRESHOLD_MIN = 5000
+STAGE0_THRESHOLD_MIN = 50000
 STAGE1_THRESHOLD_MIN = 600
 STAGE2A_MAX_RUL_MIN = 600
 
@@ -106,14 +130,12 @@ THRESH_EXIT = 0.2
 
 MAX_BUFFER_SIZE = WINDOW_LONG + 10
 
-
 _stage0_classifier = None
 _base_model = None
 _stage1_classifier = None
 _stage2a_regressor = None
 
 _feature_stats: Optional[Dict] = None
-
 _data_buffer: List[Dict[str, float]] = []
 _buffer_lock = threading.Lock()
 
@@ -146,7 +168,7 @@ def load_models() -> None:
     Fallback: Joblib/XGBoost
     """
     global _stage0_classifier, _base_model, _stage1_classifier, _stage2a_regressor
-    global _feature_stats, _initialized
+    global _feature_stats, _initialized, _sensor_lookup
     
     if _initialized:
         return
@@ -156,18 +178,17 @@ def load_models() -> None:
     
     stats_path = model_dir / "hydraulic_press_feature_stats.json"
     if stats_path.exists():
-        with open(stats_path, "r") as f:
+        with open(stats_path) as f:
             _feature_stats = json.load(f)
         print("[hydraulic_press_handler] Loaded feature stats")
-    else:
-        print("[hydraulic_press_handler] WARNING: Feature stats not found, using defaults")
-        _feature_stats = {
-                            "vibration": {"min": 0.0, "max": 10.0},
-                            "oil_temperature": {"min": 30.0, "max": 100.0},
-                            "hydraulic_pressure": {"min": 100.0, "max": 350.0},
-                            "oil_contamination": {"min": 0.0, "max": 100.0}
-                        }
-                    
+    
+    # Load sensor-RUL lookup table for interpolation
+    lookup_path = model_dir / "sensor_lifecycle_lookup.json"
+    if lookup_path.exists():
+        with open(lookup_path) as f:
+            _sensor_lookup = json.load(f)
+        print(f"[hydraulic_press_handler] Loaded sensor lookup table with {len(_sensor_lookup.get('lookup', []))} entries")
+    
     try:
         import onnxruntime as ort
         
@@ -179,29 +200,25 @@ def load_models() -> None:
         providers = ["CPUExecutionProvider"]
         
         _stage0_classifier = ort.InferenceSession(
-                                                    str(model_dir / "hydraulic_press_stage0_classifier.onnx"),
-                                                    sess_options=opts,
-                                                    providers=providers
-                                                )
-        
+            str(model_dir / "hydraulic_press_stage0_classifier.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         _base_model = ort.InferenceSession(
-                                            str(model_dir / "hydraulic_press_base_model.onnx"),
-                                            sess_options=opts,
-                                            providers=providers
-                                        )
-        
+            str(model_dir / "hydraulic_press_base_model.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         _stage1_classifier = ort.InferenceSession(
-                                                    str(model_dir / "hydraulic_press_stage1_classifier.onnx"),
-                                                    sess_options=opts,
-                                                    providers=providers
-                                                )
-        
+            str(model_dir / "hydraulic_press_stage1_classifier.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         _stage2a_regressor = ort.InferenceSession(
-                                                    str(model_dir / "hydraulic_press_stage2a_regressor.onnx"),
-                                                    sess_options=opts,
-                                                    providers=providers
-                                                )
-        
+            str(model_dir / "hydraulic_press_stage2a_regressor.onnx"),
+            sess_options=opts,
+            providers=providers
+        )
         _initialized = True
         print("[hydraulic_press_handler] ONNX models loaded successfully")
         return
@@ -213,7 +230,6 @@ def load_models() -> None:
     
     try:
         import joblib
-        from xgboost import XGBClassifier, XGBRegressor
         
         _stage0_classifier = joblib.load(str(model_dir / "hydraulic_press_stage0_classifier.pkl"))
         _base_model = joblib.load(str(model_dir / "hydraulic_press_base_model.pkl"))
@@ -234,16 +250,16 @@ def _add_to_buffer(sensor_data: Dict[str, Any]) -> None:
     
     with _buffer_lock:
         entry = {
-                    "cycle": int(sensor_data.get("cycle", 0)),
-                    "hydraulic_pressure": float(sensor_data.get("hydraulic_pressure", 0.0)),
-                    "oil_temperature": float(sensor_data.get("oil_temperature", 0.0)),
-                    "oil_contamination": float(sensor_data.get("oil_contamination", 0.0)),
-                    "ram_position_deviation": float(sensor_data.get("ram_position_deviation", 0.0)),
-                    "press_force": float(sensor_data.get("press_force", 0.0)),
-                    "vibration": float(sensor_data.get("vibration", 0.0)),
-                    "flow_rate": float(sensor_data.get("flow_rate", 0.0)),
-                    "motor_current": float(sensor_data.get("motor_current", 0.0))
-                }
+            "cycle": int(sensor_data.get("cycle", 0)),
+            "hydraulic_pressure": float(sensor_data.get("hydraulic_pressure", 0.0)),
+            "oil_temperature": float(sensor_data.get("oil_temperature", 0.0)),
+            "oil_contamination": float(sensor_data.get("oil_contamination", 0.0)),
+            "ram_position_deviation": float(sensor_data.get("ram_position_deviation", 0.0)),
+            "press_force": float(sensor_data.get("press_force", 0.0)),
+            "vibration": float(sensor_data.get("vibration", 0.0)),
+            "flow_rate": float(sensor_data.get("flow_rate", 0.0)),
+            "motor_current": float(sensor_data.get("motor_current", 0.0))
+        }
         _data_buffer.append(entry)
         
         if len(_data_buffer) > MAX_BUFFER_SIZE:
@@ -252,53 +268,78 @@ def _add_to_buffer(sensor_data: Dict[str, Any]) -> None:
 
 def reset_state() -> None:
     """Reset all state for new job or after maintenance."""
-    global _data_buffer, _in_critical_state
+    global _data_buffer, _in_critical_state, _last_seen_cycle
     
     with _buffer_lock:
+        old_critical = _in_critical_state
+        old_last_cycle = _last_seen_cycle
         _data_buffer = []
         _in_critical_state = False
+        _last_seen_cycle = -1
     
+    print(f"[TEMP:DEBUG] reset_state() called: _in_critical_state {old_critical} -> False, _last_seen_cycle {old_last_cycle} -> -1")
     print("[hydraulic_press_handler] State reset")
+
+
+_last_seen_cycle: int = -1
 
 
 def _sync_buffer_from_history(history: List[Dict[str, Any]]) -> None:
     """Sync internal buffer from Predictor_Node history."""
-    global _data_buffer
+    global _data_buffer, _in_critical_state, _last_seen_cycle
     
     with _buffer_lock:
         recent = history[-MAX_BUFFER_SIZE:] if len(history) > MAX_BUFFER_SIZE else history
         
+        if len(recent) > 0:
+            first_cycle = int(recent[0].get("cycle", 0))
+            last_cycle = int(recent[-1].get("cycle", 0))
+            
+            print(f"[TEMP:DEBUG] _sync_buffer: first_cycle={first_cycle}, last_cycle={last_cycle}, "
+                  f"_last_seen_cycle={_last_seen_cycle}, _in_critical_state={_in_critical_state}")
+            
+            if first_cycle < 100 and _last_seen_cycle > 1000:
+                print(f"[TEMP:DEBUG] LIFECYCLE RESET DETECTED! first_cycle={first_cycle} < 100, "
+                      f"_last_seen_cycle={_last_seen_cycle} > 1000 -> setting _in_critical_state=False")
+                print(f"[hydraulic_press_handler] Detected lifecycle reset: "
+                      f"first_cycle={first_cycle}, last_seen={_last_seen_cycle}")
+                _in_critical_state = False
+            
+            _last_seen_cycle = last_cycle
+        
         _data_buffer = []
         for d in recent:
             entry = {
-                        "cycle": int(d.get("cycle", 0)),
-                        "hydraulic_pressure": float(d.get("hydraulic_pressure", 0.0)),
-                        "oil_temperature": float(d.get("oil_temperature", 0.0)),
-                        "oil_contamination": float(d.get("oil_contamination", 0.0)),
-                        "ram_position_deviation": float(d.get("ram_position_deviation", 0.0)),
-                        "press_force": float(d.get("press_force", 0.0)),
-                        "vibration": float(d.get("vibration", 0.0)),
-                        "flow_rate": float(d.get("flow_rate", 0.0)),
-                        "motor_current": float(d.get("motor_current", 0.0))
-                    }
+                "cycle": int(d.get("cycle", 0)),
+                "hydraulic_pressure": float(d.get("hydraulic_pressure", 0.0)),
+                "oil_temperature": float(d.get("oil_temperature", 0.0)),
+                "oil_contamination": float(d.get("oil_contamination", 0.0)),
+                "ram_position_deviation": float(d.get("ram_position_deviation", 0.0)),
+                "press_force": float(d.get("press_force", 0.0)),
+                "vibration": float(d.get("vibration", 0.0)),
+                "flow_rate": float(d.get("flow_rate", 0.0)),
+                "motor_current": float(d.get("motor_current", 0.0))
+            }
             _data_buffer.append(entry)
 
 
 def _compute_features() -> Optional[Dict[str, np.ndarray]]:
     """
-    Compute all features from buffer matching training exactly.
+    Compute all features from buffer matching training EXACTLY.
     
     Returns dictionary with feature arrays for each model:
-        - selected_features: Full feature set (16 features)
-        - base_model_features: Subset for base model (9 features)
-        - stage2a_features: Subset for stage-2a (10 features)
+        - selected_features: Full feature set (20 features)
+        - stage0_features: Same as selected (20 features)
+        - base_model_features: Subset for base model (16 features)
+        - stage2a_features: Subset for stage-2a (14 features)
     """
     with _buffer_lock:
-        if len(_data_buffer) < 1:
+        if len(_data_buffer) < WINDOW_SHORT:
             return None
         
         n = len(_data_buffer)
         
+        # Extract sensor arrays
         hydraulic_pressure = np.array([d["hydraulic_pressure"] for d in _data_buffer])
         oil_temperature = np.array([d["oil_temperature"] for d in _data_buffer])
         oil_contamination = np.array([d["oil_contamination"] for d in _data_buffer])
@@ -308,19 +349,21 @@ def _compute_features() -> Optional[Dict[str, np.ndarray]]:
         flow_rate = np.array([d["flow_rate"] for d in _data_buffer])
         motor_current = np.array([d["motor_current"] for d in _data_buffer])
         
+        # Latest values
         latest_hydraulic_pressure = hydraulic_pressure[-1]
         latest_oil_temperature = oil_temperature[-1]
         latest_oil_contamination = oil_contamination[-1]
+        latest_ram_position_deviation = ram_position_deviation[-1]
         latest_press_force = press_force[-1]
         latest_vibration = vibration[-1]
         latest_flow_rate = flow_rate[-1]
         latest_motor_current = motor_current[-1]
         
         window_short = min(WINDOW_SHORT, n)
-        vib_roll_mean = np.mean(vibration[-window_short:])
-        vibration_energy = vib_roll_mean ** 2
-        
         window_long = min(WINDOW_LONG, n)
+        
+        def rolling_mean(arr, window):
+            return float(np.mean(arr[-window:]))
         
         def rolling_std(arr, window):
             if len(arr) < 2:
@@ -328,77 +371,129 @@ def _compute_features() -> Optional[Dict[str, np.ndarray]]:
             window_data = arr[-window:]
             return float(np.std(window_data, ddof=1)) if len(window_data) > 1 else 0.0
         
-        vibration_roll_std_20 = rolling_std(vibration, window_long)
-        flow_rate_roll_std_20 = rolling_std(flow_rate, window_long)
-        press_force_roll_std_20 = rolling_std(press_force, window_long)
-        oil_temperature_roll_std_20 = rolling_std(oil_temperature, window_long)
-        motor_current_roll_std_20 = rolling_std(motor_current, window_long)
-        ram_position_deviation_roll_std_20 = rolling_std(ram_position_deviation, window_long)
+        # Rolling mean features (window 5)
+        hydraulic_pressure_roll_mean_5 = rolling_mean(hydraulic_pressure, window_short)
+        oil_temperature_roll_mean_5 = rolling_mean(oil_temperature, window_short)
+        press_force_roll_mean_5 = rolling_mean(press_force, window_short)
+        flow_rate_roll_mean_5 = rolling_mean(flow_rate, window_short)
+        vibration_roll_mean_5 = rolling_mean(vibration, window_short)
         
+        # Rolling mean features (window 20)
+        hydraulic_pressure_roll_mean_20 = rolling_mean(hydraulic_pressure, window_long)
+        oil_temperature_roll_mean_20 = rolling_mean(oil_temperature, window_long)
+        press_force_roll_mean_20 = rolling_mean(press_force, window_long)
+        flow_rate_roll_mean_20 = rolling_mean(flow_rate, window_long)
+        motor_current_roll_mean_20 = rolling_mean(motor_current, window_long)
+        vibration_roll_mean_20 = rolling_mean(vibration, window_long)
+        
+        # Rolling std features (window 20)
+        vibration_roll_std_20 = rolling_std(vibration, window_long)
+        oil_temperature_roll_std_20 = rolling_std(oil_temperature, window_long)
+        
+        # Dev long features (deviation from long-term mean)
+        vibration_dev_long = latest_vibration - vibration_roll_mean_20
+        hydraulic_pressure_dev_long = latest_hydraulic_pressure - hydraulic_pressure_roll_mean_20
+        
+        # Energy features: vibration_roll_mean_5 ** 2
+        vibration_energy = vibration_roll_mean_5 ** 2
+        
+        # Volatility surge features: max(0, short_std - long_std)
+        vibration_short_std = rolling_std(vibration, window_short)
+        vibration_volatility_surge = max(0.0, vibration_short_std - vibration_roll_std_20)
+        
+        # Force-pressure coupling
         if latest_hydraulic_pressure > 0:
             force_pressure_coupling = latest_press_force / latest_hydraulic_pressure
             force_pressure_coupling = float(np.clip(force_pressure_coupling, 0, 10))
         else:
             force_pressure_coupling = 1.0
         
+        # Degradation index: (vib_norm + temp_norm + (1 - pressure_norm) + contam_norm) / 4.0
+        # CRITICAL FIX: Use GLOBAL ranges from feature_stats instead of buffer-local min/max
+        # Training used cycle-level normalization (future knowledge), so we approximate with global ranges
         eps = 1e-9
         
-        vib_min = vibration.min()
-        vib_max = vibration.max()
-        vib_norm = (latest_vibration - vib_min) / (vib_max - vib_min + eps) if vib_max > vib_min else 0.0
+        # Get global normalization ranges from feature_stats
+        global_ranges = None
+        if _feature_stats and "degradation_index_global_ranges" in _feature_stats:
+            global_ranges = _feature_stats["degradation_index_global_ranges"]
         
-        temp_min = oil_temperature.min()
-        temp_max = oil_temperature.max()
-        temp_norm = (latest_oil_temperature - temp_min) / (temp_max - temp_min + eps) if temp_max > temp_min else 0.0
+        def normalize_global(value, sensor_name):
+            """Normalize using global ranges from training data distribution."""
+            if global_ranges is None:
+                # Fallback to reasonable defaults based on training data analysis
+                defaults = {
+                    "vibration": (0.1, 15.0),
+                    "oil_temperature": (45.0, 850.0),
+                    "hydraulic_pressure": (70.0, 220.0),
+                    "oil_contamination": (1.5, 30.0)
+                }
+                g_min, g_max = defaults.get(sensor_name, (0.0, 1.0))
+            else:
+                g_min = global_ranges.get(f"{sensor_name}_min", 0.0)
+                g_max = global_ranges.get(f"{sensor_name}_max", 1.0)
+            
+            if g_max - g_min < eps:
+                return 0.5
+            # Clip to [0, 1] range after normalization
+            normalized = (value - g_min) / (g_max - g_min + eps)
+            return float(np.clip(normalized, 0.0, 1.0))
         
-        pres_min = hydraulic_pressure.min()
-        pres_max = hydraulic_pressure.max()
-        pres_norm = 1.0 - (latest_hydraulic_pressure - pres_min) / (pres_max - pres_min + eps) if pres_max > pres_min else 0.0
+        vib_norm = normalize_global(latest_vibration, "vibration")
+        temp_norm = normalize_global(latest_oil_temperature, "oil_temperature")
+        pressure_norm = normalize_global(latest_hydraulic_pressure, "hydraulic_pressure")
+        contam_norm = normalize_global(latest_oil_contamination, "oil_contamination")
         
-        contam_min = oil_contamination.min()
-        contam_max = oil_contamination.max()
-        contam_norm = (latest_oil_contamination - contam_min) / (contam_max - contam_min + eps) if contam_max > contam_min else 0.0
+        degradation_index = (vib_norm + temp_norm + (1.0 - pressure_norm) + contam_norm) / 4.0
         
-        vib_norm = float(np.clip(vib_norm, 0.0, 1.0))
-        temp_norm = float(np.clip(temp_norm, 0.0, 1.0))
-        pres_norm = float(np.clip(pres_norm, 0.0, 1.0))
-        contam_norm = float(np.clip(contam_norm, 0.0, 1.0))
-        
-        degradation_index = (vib_norm + temp_norm + pres_norm + contam_norm) / 4.0
-        
+        # Build feature dictionary
         feature_dict = {
-                            "vibration_energy": vibration_energy,
-                            "vibration": latest_vibration,
-                            "degradation_index": degradation_index,
-                            "flow_rate_roll_std_20": flow_rate_roll_std_20,
-                            "press_force": latest_press_force,
-                            "oil_contamination": latest_oil_contamination,
-                            "oil_temperature": latest_oil_temperature,
-                            "press_force_roll_std_20": press_force_roll_std_20,
-                            "vibration_roll_std_20": vibration_roll_std_20,
-                            "flow_rate": latest_flow_rate,
-                            "force_pressure_coupling": force_pressure_coupling,
-                            "hydraulic_pressure": latest_hydraulic_pressure,
-                            "motor_current": latest_motor_current,
-                            "ram_position_deviation_roll_std_20": ram_position_deviation_roll_std_20,
-                            "oil_temperature_roll_std_20": oil_temperature_roll_std_20,
-                            "motor_current_roll_std_20": motor_current_roll_std_20
-                        }
+            "vibration": latest_vibration,
+            "flow_rate": latest_flow_rate,
+            "press_force": latest_press_force,
+            "motor_current": latest_motor_current,
+            "vibration_roll_std_20": vibration_roll_std_20,
+            "oil_temperature_roll_std_20": oil_temperature_roll_std_20,
+            "vibration_dev_long": vibration_dev_long,
+            "hydraulic_pressure_dev_long": hydraulic_pressure_dev_long,
+            "vibration_energy": vibration_energy,
+            "vibration_volatility_surge": vibration_volatility_surge,
+            "flow_rate_roll_mean_5": flow_rate_roll_mean_5,
+            "press_force_roll_mean_5": press_force_roll_mean_5,
+            "hydraulic_pressure_roll_mean_5": hydraulic_pressure_roll_mean_5,
+            "oil_temperature_roll_mean_5": oil_temperature_roll_mean_5,
+            "flow_rate_roll_mean_20": flow_rate_roll_mean_20,
+            "motor_current_roll_mean_20": motor_current_roll_mean_20,
+            "oil_temperature_roll_mean_20": oil_temperature_roll_mean_20,
+            "press_force_roll_mean_20": press_force_roll_mean_20,
+            "force_pressure_coupling": force_pressure_coupling,
+            "degradation_index": degradation_index,
+        }
         
-        selected_feature_values = [feature_dict[f] for f in SELECTED_FEATURES]
-        selected_features_array = np.array(selected_feature_values, dtype=np.float32).reshape(1, -1)
-        
-        base_feature_values = [feature_dict[f] for f in BASE_MODEL_FEATURES]
-        base_features_array = np.array(base_feature_values, dtype=np.float32).reshape(1, -1)
-        
-        stage2a_feature_values = [feature_dict[f] for f in STAGE2A_FEATURES]
-        stage2a_features_array = np.array(stage2a_feature_values, dtype=np.float32).reshape(1, -1)
+        try:
+            selected_feature_values = [feature_dict[f] for f in SELECTED_FEATURES]
+            selected_features_array = np.array(selected_feature_values, dtype=np.float32).reshape(1, -1)
+            
+            stage0_feature_values = [feature_dict[f] for f in STAGE0_FEATURES]
+            stage0_features_array = np.array(stage0_feature_values, dtype=np.float32).reshape(1, -1)
+            
+            base_feature_values = [feature_dict[f] for f in BASE_MODEL_FEATURES]
+            base_features_array = np.array(base_feature_values, dtype=np.float32).reshape(1, -1)
+            
+            stage2a_feature_values = [feature_dict[f] for f in STAGE2A_FEATURES]
+            stage2a_features_array = np.array(stage2a_feature_values, dtype=np.float32).reshape(1, -1)
+            
+        except KeyError as e:
+            print(f"[hydraulic_press_handler] Missing feature in dict: {e}")
+            print(f"[hydraulic_press_handler] Available features: {list(feature_dict.keys())}")
+            return None
         
         return {
-                    "selected_features": selected_features_array,
-                    "base_model_features": base_features_array,
-                    "stage2a_features": stage2a_features_array
-                }
+            "selected_features": selected_features_array,
+            "stage0_features": stage0_features_array,
+            "base_model_features": base_features_array,
+            "stage2a_features": stage2a_features_array
+        }
 
 
 def _run_stage0_onnx(X: np.ndarray) -> float:
@@ -428,19 +523,33 @@ def _run_stage0_sklearn(X: np.ndarray) -> float:
 
 
 def _run_base_model_onnx(X: np.ndarray) -> float:
-    """Run Base Model using ONNX. Returns RUL in minutes."""
+    """Run Base Model using ONNX. Returns RUL in minutes.
+    
+    Base Model outputs log1p(RUL_hours) where RUL_hours = RUL_minutes / 60.
+    Decode: expm1(prediction) * 60 = RUL in minutes
+    """
     input_name = _base_model.get_inputs()[0].name
     pred_log_hours = float(_base_model.run(None, {input_name: X})[0].squeeze())
+    
     pred_hours = np.expm1(pred_log_hours)
     pred_minutes = pred_hours * 60.0
+    
+    max_rul = _feature_stats.get('base_model_max_rul', 711434.0) if _feature_stats else 711434.0
+    pred_minutes = float(np.clip(pred_minutes, 0.0, max_rul))
+    
     return pred_minutes
 
 
 def _run_base_model_sklearn(X: np.ndarray) -> float:
-    """Run Base Model using sklearn. Returns RUL in minutes."""
+    """Run Base Model using sklearn/XGBoost. Returns RUL in minutes."""
     pred_log_hours = float(_base_model.predict(X)[0])
+    
     pred_hours = np.expm1(pred_log_hours)
     pred_minutes = pred_hours * 60.0
+    
+    max_rul = _feature_stats.get('base_model_max_rul', 711434.0) if _feature_stats else 711434.0
+    pred_minutes = float(np.clip(pred_minutes, 0.0, max_rul))
+    
     return pred_minutes
 
 
@@ -487,28 +596,86 @@ def _run_stage2a_sklearn(X: np.ndarray) -> float:
     return pred_minutes
 
 
+def _estimate_rul_from_sensors(sensor_data: Dict[str, Any]) -> Optional[float]:
+    """
+    Estimate RUL using sensor-based interpolation from training data.
+    This provides a physics-informed estimate that doesn't suffer from
+    the look-ahead bias in degradation_index.
+    
+    Returns RUL in minutes, or None if lookup table not available.
+    """
+    if _sensor_lookup is None or "lookup" not in _sensor_lookup:
+        return None
+    
+    lookup = _sensor_lookup["lookup"]
+    if len(lookup) < 2:
+        return None
+    
+    # Get current sensor values
+    vibration = float(sensor_data.get("vibration", 0.0))
+    oil_temperature = float(sensor_data.get("oil_temperature", 0.0))
+    hydraulic_pressure = float(sensor_data.get("hydraulic_pressure", 200.0))
+    oil_contamination = float(sensor_data.get("oil_contamination", 0.0))
+    
+    # Extract arrays from lookup
+    ruls = np.array([e["rul"] for e in lookup])
+    vibs = np.array([e["vibration"] for e in lookup])
+    temps = np.array([e["oil_temperature"] for e in lookup])
+    pres = np.array([e["hydraulic_pressure"] for e in lookup])
+    contams = np.array([e["oil_contamination"] for e in lookup])
+    
+    def estimate_from_sensor(sensor_value, sensor_array, direction="increasing"):
+        """
+        Estimate RUL from a single sensor value.
+        direction: "increasing" = higher value means lower RUL (vibration, temp, contamination)
+                   "decreasing" = lower value means lower RUL (pressure)
+        """
+        if direction == "increasing":
+            if sensor_value <= sensor_array.min():
+                return float(ruls.max())
+            if sensor_value >= sensor_array.max():
+                return float(ruls.min())
+            # Find closest match by linear interpolation
+            try:
+                from scipy.interpolate import interp1d
+                interp = interp1d(sensor_array, ruls, bounds_error=False, 
+                                  fill_value=(float(ruls.max()), float(ruls.min())))
+                return float(interp(sensor_value))
+            except ImportError:
+                # Fallback: nearest neighbor
+                idx = np.argmin(np.abs(sensor_array - sensor_value))
+                return float(ruls[idx])
+        else:
+            if sensor_value >= sensor_array.max():
+                return float(ruls.max())
+            if sensor_value <= sensor_array.min():
+                return float(ruls.min())
+            try:
+                from scipy.interpolate import interp1d
+                # Reverse arrays for decreasing relationship
+                interp = interp1d(sensor_array[::-1], ruls[::-1], bounds_error=False,
+                                  fill_value=(float(ruls.max()), float(ruls.min())))
+                return float(interp(sensor_value))
+            except ImportError:
+                idx = np.argmin(np.abs(sensor_array - sensor_value))
+                return float(ruls[idx])
+    
+    # Estimate RUL from each sensor
+    rul_from_vib = estimate_from_sensor(vibration, vibs, "increasing")
+    rul_from_temp = estimate_from_sensor(oil_temperature, temps, "increasing")
+    rul_from_pres = estimate_from_sensor(hydraulic_pressure, pres, "decreasing")
+    rul_from_contam = estimate_from_sensor(oil_contamination, contams, "increasing")
+    
+    # Weighted average - vibration and temperature are more reliable
+    weights = [0.35, 0.35, 0.15, 0.15]
+    weighted_rul = np.average([rul_from_vib, rul_from_temp, rul_from_pres, rul_from_contam], weights=weights)
+    
+    return float(weighted_rul)
+
+
 def predict(sensor_data) -> Dict[str, Any]:
     """
     Main prediction function called by Predictor_Node.
-    
-    Implements multi-resolution RUL prediction:
-        Stage-0: Regime detection (LONG_TERM vs NEAR_TERM)
-        Stage-1: Critical detection with hysteresis
-        Base Model: Long-term RUL tracking
-        Stage-2A: Critical regime high-resolution prediction
-    
-    Args:
-        sensor_data: Either:
-            - Dict with sensor keys
-            - List[Dict] - history buffer from Predictor_Node
-    
-    Returns:
-        Dict with keys:
-            - rul_min: float (predicted RUL in minutes)
-            - unit: str ('min')
-            - stage: str ('BASE', 'STAGE_2A', etc.)
-            - crit_prob: float (probability of critical state)
-            - regime: str ('LONG_TERM' or 'NEAR_TERM')
     """
     global _in_critical_state
     
@@ -518,12 +685,12 @@ def predict(sensor_data) -> Dict[str, Any]:
     if isinstance(sensor_data, list):
         if len(sensor_data) == 0:
             return {
-                        "rul_min": -1.0,
-                        "unit": "min",
-                        "stage": "NO_DATA",
-                        "crit_prob": 0.0,
-                        "regime": "UNKNOWN"
-                    }
+                "rul_min": -1.0,
+                "unit": "min",
+                "stage": "NO_DATA",
+                "crit_prob": 0.0,
+                "regime": "UNKNOWN"
+            }
         _sync_buffer_from_history(sensor_data)
         current_data = sensor_data[-1]
     else:
@@ -531,7 +698,15 @@ def predict(sensor_data) -> Dict[str, Any]:
         _add_to_buffer(current_data)
     
     current_cycle = current_data.get("cycle", 0)
+    
+    vibration = current_data.get("vibration", -1)
+    pressure = current_data.get("hydraulic_pressure", -1)
+    oil_temp = current_data.get("oil_temperature", -1)
+    print(f"[TEMP:DEBUG] predict() cycle={current_cycle}, vibration={vibration:.4f}, "
+          f"pressure={pressure:.2f}, oil_temp={oil_temp:.2f}, _in_critical_state={_in_critical_state}")
+    
     if current_cycle == 0:
+        print(f"[TEMP:DEBUG] cycle==0 detected, calling reset_state()")
         reset_state()
         _add_to_buffer(current_data)
     
@@ -539,14 +714,15 @@ def predict(sensor_data) -> Dict[str, Any]:
     
     if feature_arrays is None:
         return {
-                    "rul_min": -1.0,
-                    "unit": "min",
-                    "stage": "INSUFFICIENT_DATA",
-                    "crit_prob": 0.0,
-                    "regime": "UNKNOWN"
-                }
+            "rul_min": -1.0,
+            "unit": "min",
+            "stage": "INSUFFICIENT_DATA",
+            "crit_prob": 0.0,
+            "regime": "UNKNOWN"
+        }
     
     X_selected = feature_arrays["selected_features"]
+    X_stage0 = feature_arrays["stage0_features"]
     X_base = feature_arrays["base_model_features"]
     X_stage2a = feature_arrays["stage2a_features"]
     
@@ -554,9 +730,9 @@ def predict(sensor_data) -> Dict[str, Any]:
         is_onnx = hasattr(_stage0_classifier, "run")
         
         if is_onnx:
-            near_term_prob = _run_stage0_onnx(X_selected)
+            near_term_prob = _run_stage0_onnx(X_stage0)
         else:
-            near_term_prob = _run_stage0_sklearn(X_selected)
+            near_term_prob = _run_stage0_sklearn(X_stage0)
         
         regime = "NEAR_TERM" if near_term_prob >= 0.5 else "LONG_TERM"
         
@@ -565,45 +741,153 @@ def predict(sensor_data) -> Dict[str, Any]:
         else:
             critical_prob = _run_stage1_sklearn(X_selected)
         
-        if not _in_critical_state:
-            if critical_prob >= THRESH_ENTER:
-                _in_critical_state = True
+        # SENSOR-BASED GUARD: Override Stage-1 classifier when sensors indicate healthy state
+        # This compensates for the look-ahead bias in degradation_index during training
+        # Thresholds based on training data analysis: healthy state has low degradation sensors
+        vibration = current_data.get("vibration", 0.0)
+        oil_temperature = current_data.get("oil_temperature", 0.0)
+        oil_contamination = current_data.get("oil_contamination", 0.0)
+        hydraulic_pressure = current_data.get("hydraulic_pressure", 200.0)
+        
+        # Conservative thresholds from training data percentiles:
+        # - vibration p75 = 2.96, so healthy if < 3.0
+        # - oil_temperature p50 = 175, so healthy if < 200
+        # - oil_contamination p50 = 6.04, so healthy if < 7.0
+        # - hydraulic_pressure p50 = 178, so healthy if > 165
+        sensors_indicate_healthy = (
+            vibration < 3.0 and 
+            oil_temperature < 200.0 and 
+            oil_contamination < 7.0 and 
+            hydraulic_pressure > 165.0
+        )
+        
+        if sensors_indicate_healthy:
+            # Force BASE model usage when sensors clearly indicate healthy state
+            effective_critical_prob = 0.0
+            print(f"[TEMP:DEBUG] SENSOR GUARD: Overriding crit_prob={critical_prob:.4f} -> 0.0 "
+                  f"(vib={vibration:.2f}<3.0, temp={oil_temperature:.1f}<200, contam={oil_contamination:.2f}<7, pres={hydraulic_pressure:.1f}>165)")
         else:
-            if critical_prob <= THRESH_EXIT:
+            # Additional sensor-based check: STAGE_2A should only be for truly critical state
+            # Based on training data: RUL < 5000 typically has vibration > 4.0, temp > 270, pressure < 165
+            sensors_indicate_critical = (
+                vibration > 4.0 or 
+                oil_temperature > 270.0 or 
+                oil_contamination > 10.0 or
+                hydraulic_pressure < 160.0
+            )
+            
+            if sensors_indicate_critical:
+                effective_critical_prob = critical_prob
+            else:
+                # Sensors in degraded but not critical range - reduce critical probability
+                # to prefer BASE model with interpolation blending
+                effective_critical_prob = min(critical_prob, 0.4)
+                print(f"[TEMP:DEBUG] SENSOR MODERATE: Reducing crit_prob={critical_prob:.4f} -> {effective_critical_prob:.4f} "
+                      f"(vib={vibration:.2f}, temp={oil_temperature:.1f}, contam={oil_contamination:.2f}, pres={hydraulic_pressure:.1f})")
+        
+        old_critical_state = _in_critical_state
+        if not _in_critical_state:
+            if effective_critical_prob >= THRESH_ENTER:
+                _in_critical_state = True
+                print(f"[TEMP:DEBUG] ENTERING CRITICAL: crit_prob={effective_critical_prob:.4f} >= THRESH_ENTER={THRESH_ENTER}")
+        else:
+            if effective_critical_prob <= THRESH_EXIT:
                 _in_critical_state = False
+                print(f"[TEMP:DEBUG] EXITING CRITICAL: crit_prob={effective_critical_prob:.4f} <= THRESH_EXIT={THRESH_EXIT}")
         
         if _in_critical_state:
+            # Even in critical state, use sensor interpolation for better accuracy
+            sensor_based_rul = _estimate_rul_from_sensors(current_data)
+            
             if is_onnx:
-                final_rul = _run_stage2a_onnx(X_stage2a)
+                model_rul = _run_stage2a_onnx(X_stage2a)
             else:
-                final_rul = _run_stage2a_sklearn(X_stage2a)
+                model_rul = _run_stage2a_sklearn(X_stage2a)
+            
+            if sensor_based_rul is not None:
+                # In critical state, give more weight to interpolation since STAGE_2A
+                # model also has bias issues, but cap at STAGE2A_MAX_RUL_MIN
+                if sensor_based_rul < STAGE2A_MAX_RUL_MIN * 2:
+                    # Actually close to critical - blend with higher interpolation weight
+                    interp_weight = 0.7
+                    model_weight = 0.3
+                    final_rul = sensor_based_rul * interp_weight + model_rul * model_weight
+                    final_rul = min(final_rul, STAGE2A_MAX_RUL_MIN)
+                else:
+                    # Not actually critical based on sensors - use interpolation directly
+                    # but cap at reasonable maximum for critical state
+                    final_rul = min(sensor_based_rul, STAGE2A_MAX_RUL_MIN * 50)  # ~30000 min
+                print(f"[TEMP:DEBUG] STAGE_2A blending: interp={sensor_based_rul:.0f}, model={model_rul:.0f}, final={final_rul:.0f}")
+            else:
+                final_rul = model_rul
             stage = "STAGE_2A"
         else:
-            if is_onnx:
-                final_rul = _run_base_model_onnx(X_base)
+            # HYBRID APPROACH: Use sensor-based interpolation for better accuracy
+            # The ONNX base model has look-ahead bias from degradation_index
+            sensor_based_rul = _estimate_rul_from_sensors(current_data)
+            
+            if sensor_based_rul is not None and sensors_indicate_healthy:
+                # When sensors clearly indicate healthy state, trust interpolation
+                final_rul = sensor_based_rul
+                stage = "BASE_INTERP"
+                print(f"[TEMP:DEBUG] Using sensor interpolation: {final_rul:.0f} min")
             else:
-                final_rul = _run_base_model_sklearn(X_base)
-            stage = "BASE"
+                # Use ONNX model when sensors indicate degradation or lookup not available
+                if is_onnx:
+                    model_rul = _run_base_model_onnx(X_base)
+                else:
+                    model_rul = _run_base_model_sklearn(X_base)
+                
+                # Blend with sensor-based estimate if available
+                if sensor_based_rul is not None:
+                    # Weight based on how "healthy" the sensors look
+                    # Use normalized sensor values to calculate degradation score
+                    # Healthy ranges: vib < 1.0, temp < 100, pres > 190, contam < 3.0
+                    # Degraded ranges: vib > 4.0, temp > 270, pres < 160, contam > 10.0
+                    vib_score = min(1.0, max(0.0, (vibration - 1.0) / 3.0))
+                    temp_score = min(1.0, max(0.0, (oil_temperature - 100.0) / 170.0))
+                    pres_score = min(1.0, max(0.0, (190.0 - hydraulic_pressure) / 30.0))
+                    contam_score = min(1.0, max(0.0, (oil_contamination - 3.0) / 7.0))
+                    
+                    degradation_score = (vib_score + temp_score + pres_score + contam_score) / 4.0
+                    
+                    # Blend: low degradation = more interpolation, high degradation = balanced
+                    # Never fully trust model alone since it has bias issues
+                    interp_weight = max(0.3, 1.0 - degradation_score * 0.7)
+                    model_weight = 1.0 - interp_weight
+                    
+                    final_rul = sensor_based_rul * interp_weight + model_rul * model_weight
+                    stage = f"BASE_BLEND({interp_weight:.1f})"
+                    print(f"[TEMP:DEBUG] Blending: interp={sensor_based_rul:.0f}, model={model_rul:.0f}, "
+                          f"deg_score={degradation_score:.2f}, weights=({interp_weight:.2f}, {model_weight:.2f}), final={final_rul:.0f}")
+                else:
+                    final_rul = model_rul
+                    stage = "BASE"
+        
+        print(f"[TEMP:DEBUG] PREDICTION: cycle={current_cycle}, regime={regime}, near_term_prob={near_term_prob:.4f}, "
+              f"crit_prob={critical_prob:.4f}, effective_crit={effective_critical_prob:.4f}, _in_critical={_in_critical_state}, stage={stage}, rul={final_rul:.2f}min")
         
         final_rul = max(0.0, final_rul)
         
         return {
-                    "rul_min": float(final_rul),
-                    "unit": "min",
-                    "stage": stage,
-                    "crit_prob": float(np.clip(critical_prob, 0.0, 1.0)),
-                    "regime": regime
-                }
+            "rul_min": float(final_rul),
+            "unit": "min",
+            "stage": stage,
+            "crit_prob": float(np.clip(effective_critical_prob, 0.0, 1.0)),
+            "regime": regime
+        }
         
     except Exception as e:
         print(f"[hydraulic_press_handler] Inference error: {e}")
+        import traceback
+        traceback.print_exc()
         return {
-                    "rul_min": -1.0,
-                    "unit": "min",
-                    "stage": "ERROR",
-                    "crit_prob": 0.0,
-                    "regime": "UNKNOWN"
-                }
+            "rul_min": -1.0,
+            "unit": "min",
+            "stage": "ERROR",
+            "crit_prob": 0.0,
+            "regime": "UNKNOWN"
+        }
 
 
 try:

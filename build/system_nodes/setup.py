@@ -1,1 +1,0 @@
-/home/canozkan/Capstone_Project/src/system_nodes/setup.py
