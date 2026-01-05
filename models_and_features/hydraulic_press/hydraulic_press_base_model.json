@@ -1,0 +1,24 @@
+{
+    "features": [
+        "hydraulic_pressure_norm",
+        "oil_temperature_norm",
+        "oil_contamination_norm",
+        "vibration_norm",
+        "press_force_norm",
+        "flow_rate_norm",
+        "motor_current_norm",
+        "normalized_degradation",
+        "time_position"
+    ],
+    "min_rul_hours": 83.33333333333333,
+    "baseline_samples": 100,
+    "normalize_sensors": [
+        "hydraulic_pressure",
+        "oil_temperature",
+        "oil_contamination",
+        "vibration",
+        "press_force",
+        "flow_rate",
+        "motor_current"
+    ]
+}
