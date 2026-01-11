@@ -1,0 +1,9 @@
+{
+    "max_rul_min": 1000,
+    "target_mae_min": 40,
+    "severity_weights": {
+        "ultra": 20,
+        "critical": 10,
+        "near": 5
+    }
+}

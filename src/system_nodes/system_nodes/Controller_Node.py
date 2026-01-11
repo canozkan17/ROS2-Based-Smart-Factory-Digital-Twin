@@ -65,7 +65,7 @@ class Controller_Node(Node):
         self.hydraulic_press_total_cycles = 0
         self.hydraulic_press_current_cycle = 0
         self.hydraulic_press_last_received_rul = 0
-        self.hydraulic_press_CRITICAL = 600
+        self.hydraulic_press_CRITICAL = 300 # stage2A best performance is below 300 
         self.hydraulic_press_WARNING  = 1500
         self.hydraulic_press_SAFE_BUFFER = 100
         
@@ -237,7 +237,7 @@ class Controller_Node(Node):
             return
 
         remaining_min = max(0, total_cycle - cycle)
-        current_state = self.machine_status.get(machine, 1)
+        current_state = self.machine_status.get(machine, 1) # type: ignore
         
         # Debug log for decision inputs
         self.get_logger().info(

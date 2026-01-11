@@ -1,0 +1,6 @@
+{
+    "threshold_min": 600,
+    "optimal_prob_threshold": 0.0214563999325037,
+    "target_precision": 0.7,
+    "trained_with_explicit_negatives": true
+}

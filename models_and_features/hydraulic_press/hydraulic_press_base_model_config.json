@@ -1,0 +1,33 @@
+{
+    "features": [
+        "hydraulic_pressure_norm",
+        "oil_temperature_norm",
+        "oil_contamination_norm",
+        "vibration_norm",
+        "press_force_norm",
+        "flow_rate_norm",
+        "motor_current_norm",
+        "normalized_degradation",
+        "time_position"
+    ],
+    "min_rul_hours": 83.33333333333333,
+    "baseline_samples": 100,
+    "normalize_sensors": [
+        "hydraulic_pressure",
+        "oil_temperature",
+        "oil_contamination",
+        "vibration",
+        "press_force",
+        "flow_rate",
+        "motor_current"
+    ],
+    "global_baseline": {
+        "hydraulic_pressure": 198.7830352783203,
+        "oil_temperature": 54.989341735839844,
+        "oil_contamination": 1.2373652458190918,
+        "vibration": 0.2893248200416565,
+        "press_force": 101.2015380859375,
+        "flow_rate": 107.74491882324219,
+        "motor_current": 43.483612060546875
+    }
+}
