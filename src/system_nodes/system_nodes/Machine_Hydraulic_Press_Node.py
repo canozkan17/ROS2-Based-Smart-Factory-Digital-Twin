@@ -65,46 +65,50 @@ class Machine_Hydraulic_Press_Node(Node):
 
         # HYDRAULIC PRESS SENSOR PARAMETERS
         # MUST MATCH generate_hydraulic_data.py EXACTLY for training consistency!
+
+        # Degradation profile (matches generate_hydraulic_data.py)
+        self.rul_for_near_term = 5000.0
+        self.rul_for_critical = 600.0
         
         # Hydraulic pressure (bar) - seal wear dominant
         self.base_pressure = rng.uniform(180.0, 220.0)
-        self.pressure_drop_rate = rng.uniform(0.00008, 0.00025)
-        self.pressure_noise = rng.uniform(0.3, 1.5)
+        self.pressure_drop_rate = rng.uniform(0.00005, 0.00015)
+        self.pressure_noise = rng.uniform(0.3, 1.0)
 
         # Oil temperature (°C) - oil degradation
         self.base_oil_temp = rng.uniform(45.0, 65.0)
-        self.oil_temp_rate = rng.uniform(0.0005, 0.0015)
-        self.oil_temp_noise = rng.uniform(0.08, 0.4)
+        self.oil_temp_rate = rng.uniform(0.0003, 0.0010)
+        self.oil_temp_noise = rng.uniform(0.08, 0.3)
 
         # Oil contamination index (dimensionless)
         self.base_contamination = rng.uniform(0.5, 2.0)
-        self.contamination_growth = rng.uniform(0.00004, 0.00012)
-        self.contamination_noise = rng.uniform(0.008, 0.03)
+        self.contamination_growth = rng.uniform(0.00003, 0.00010)
+        self.contamination_noise = rng.uniform(0.008, 0.025)
 
         # Ram position deviation (mm) - misalignment
         self.base_ram_dev = rng.uniform(0.01, 0.05)
-        self.ram_dev_growth = rng.uniform(0.00002, 0.00008)
-        self.ram_dev_noise = rng.uniform(0.0008, 0.003)
+        self.ram_dev_growth = rng.uniform(0.00001, 0.00006)
+        self.ram_dev_noise = rng.uniform(0.0008, 0.002)
 
         # Press force / tonnage (tons)
         self.base_force = rng.uniform(80.0, 120.0)
-        self.force_loss_rate = rng.uniform(0.00005, 0.00015)
-        self.force_noise = rng.uniform(0.2, 1.0)
+        self.force_loss_rate = rng.uniform(0.00003, 0.00012)
+        self.force_noise = rng.uniform(0.2, 0.8)
 
         # Frame / ram vibration (mm/s)
         self.base_vibration = rng.uniform(0.1, 0.5)
-        self.failure_vibration = rng.uniform(4.0, 10.0)
-        self.vibration_noise = rng.uniform(0.015, 0.07)
+        self.failure_vibration = rng.uniform(6.0, 12.0)
+        self.vibration_noise = rng.uniform(0.015, 0.05)
 
         # Hydraulic flow rate (L/min)
         self.base_flow = rng.uniform(90.0, 130.0)
-        self.flow_loss_rate = rng.uniform(0.00006, 0.00018)
-        self.flow_noise = rng.uniform(0.2, 0.8)
+        self.flow_loss_rate = rng.uniform(0.00004, 0.00014)
+        self.flow_noise = rng.uniform(0.2, 0.6)
 
         # Motor current (A)
         self.base_current = rng.uniform(30.0, 55.0)
-        self.current_growth_rate = rng.uniform(0.00008, 0.0003)
-        self.current_noise = rng.uniform(0.08, 0.4)
+        self.current_growth_rate = rng.uniform(0.00006, 0.00020)
+        self.current_noise = rng.uniform(0.08, 0.3)
 
         # Set-up logs
         self.get_logger().info("Machine Hydraulic Press node ready!")
@@ -251,12 +255,22 @@ class Machine_Hydraulic_Press_Node(Node):
         """
         t = float(self.cycles_done)
         current_rul = total_rul - t - 1
-        fraction = t / total_rul
+        fraction = t / total_rul if total_rul > 0 else 0.0
 
-        # CRITICAL REGION BOOST (RUL <= 600)
-        critical_boost = 1.0
-        if current_rul <= 600:
-            critical_boost = 1.0 + (600 - current_rul) / 600 * 2.0  
+        # Degradation calculations
+        base_degradation = fraction
+
+        relative_near = max((self.rul_for_near_term - current_rul) / self.rul_for_near_term, 0.0)
+        near_term_factor = 1.0 + (relative_near ** 1.5) * 2.0
+
+        relative_critical = max((self.rul_for_critical - current_rul) / self.rul_for_critical, 0.0)
+        critical_boost = 1.0 + (relative_critical ** 2) * 5.0
+
+        # Combined degradation factor (multiplicative)
+        degradation_factor = base_degradation * near_term_factor * critical_boost
+
+        # Noise multiplier (heteroscedastic)
+        noise_multiplier = 1.0 + degradation_factor
 
         # Physical limits for realistic sensor values
         max_oil_temperature = 120.0
@@ -269,59 +283,64 @@ class Machine_Hydraulic_Press_Node(Node):
 
         hydraulic_pressure = (
                                 self.base_pressure
-                                - self.pressure_drop_rate * t * critical_boost
-                                + rng.normal(0.0, self.pressure_noise * (1.0 + fraction))
+                                - self.pressure_drop_rate * t * near_term_factor * critical_boost
+                                + rng.normal(0.0, self.pressure_noise) * noise_multiplier
                             )
         hydraulic_pressure = max(hydraulic_pressure, min_hydraulic_pressure)
 
         oil_temperature = (
                             self.base_oil_temp
-                            + self.oil_temp_rate * t * critical_boost
-                            + rng.normal(0.0, self.oil_temp_noise)
+                            + self.oil_temp_rate * t * near_term_factor * critical_boost
+                            + rng.normal(0.0, self.oil_temp_noise) * (1.0 + 0.5 * degradation_factor)
                         )
         oil_temperature = min(oil_temperature, max_oil_temperature)
 
         oil_contamination = (
                                 self.base_contamination
-                                + self.contamination_growth * t * critical_boost
-                                + rng.normal(0.0, self.contamination_noise * (1.0 + fraction))
+                                + self.contamination_growth * t * near_term_factor * critical_boost
+                                + rng.normal(0.0, self.contamination_noise) * noise_multiplier
                             )
         oil_contamination = min(oil_contamination, max_oil_contamination)
 
         ram_position_deviation = (
                                     self.base_ram_dev
-                                    + self.ram_dev_growth * t * critical_boost
-                                    + rng.normal(0.0, self.ram_dev_noise)
+                                    + self.ram_dev_growth * t * near_term_factor * critical_boost
+                                    + rng.normal(0.0, self.ram_dev_noise) * noise_multiplier
                                 )
 
         press_force = (
-                        self.base_force
-                        - self.force_loss_rate * t * critical_boost
-                        + rng.normal(0.0, self.force_noise * (1.0 + 0.5 * fraction))
-                    )
+                            self.base_force
+                            - self.force_loss_rate * t * near_term_factor * critical_boost
+                            + rng.normal(0.0, self.force_noise) * (1.0 + 0.3 * degradation_factor)
+                        )
         press_force = max(press_force, min_press_force)
 
+        vibration_profile = (self.failure_vibration - self.base_vibration) * (
+                                                                                0.1 * fraction +
+                                                                                0.3 * (relative_near ** 2) +
+                                                                                0.6 * (relative_critical ** 1.5)
+                                                                            )
         vibration = (
                         self.base_vibration
-                        + (self.failure_vibration - self.base_vibration) * (fraction ** 1.5) * critical_boost
-                        + rng.normal(0.0, self.vibration_noise * (1.0 + 0.5 * fraction))
+                        + vibration_profile
+                        + rng.normal(0.0, self.vibration_noise) * noise_multiplier
                     )
         vibration = min(vibration, max_vibration)
 
         flow_rate = (
                         self.base_flow
-                        - self.flow_loss_rate * t * critical_boost
-                        + rng.normal(0.0, self.flow_noise * (1.0 + fraction))
+                        - self.flow_loss_rate * t * near_term_factor * critical_boost
+                        + rng.normal(0.0, self.flow_noise) * noise_multiplier
                     )
         flow_rate = max(flow_rate, min_flow_rate)
 
         motor_current = (
                             self.base_current
-                            + self.current_growth_rate * t * critical_boost
-                            + rng.normal(0.0, self.current_noise * (1.0 + fraction))
+                            + self.current_growth_rate * t * near_term_factor * critical_boost
+                            + rng.normal(0.0, self.current_noise) * (1.0 + 0.5 * degradation_factor)
                         )
         motor_current = min(motor_current, max_motor_current)
-        
+
         cycle_output = {
                             "hydraulic_pressure": float(hydraulic_pressure),
                             "oil_temperature": float(oil_temperature),
