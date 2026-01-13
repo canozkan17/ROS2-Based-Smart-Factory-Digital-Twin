@@ -48,7 +48,7 @@ stage0_threshold: Dict[str, Any] = {}
 models: Dict[str, Any] = {"stage0": None, "stage1": None, "base": None, "stage2a": None}
 _eps = 1e-9
 
-# ---------- State management ----------
+# State management
 def reset_state():
     """
     Reset temporary buffers.
@@ -58,7 +58,7 @@ def reset_state():
     sensors_raw = {}
 
 
-# ---------- Model & config loading ----------
+# Model & config loading
 def load_models(models_dir: str = None): # type: ignore
     """
     Load models and configs from models_and_features/hydraulic_press.
@@ -186,10 +186,10 @@ def load_models(models_dir: str = None): # type: ignore
     models["stage2a"] = try_load("hydraulic_press_stage2a_regressor.pkl")
 
 
-# ---------- Helpers for window detection & arrays ----------
-def _arr_from_window(window: List[Dict[str, Any]], key: str) -> np.ndarray:
+# Helpers for arrays
+def _arr_from_sensor_data(sensor_data: List[Dict[str, Any]], key: str) -> np.ndarray:
     vals = []
-    for s in window:
+    for s in sensor_data:
         v = s.get(key, np.nan)
         try:
             vals.append(float(v))
@@ -198,29 +198,10 @@ def _arr_from_window(window: List[Dict[str, Any]], key: str) -> np.ndarray:
     return np.asarray(vals, dtype=np.float32)
 
 
-def _requires_window(feat_list: List[str]) -> bool:
-    for f in feat_list:
-        if any(p in f for p in ["roll_mean", "roll_std", "_max_", "_slope_", "pct_rank", "exp_degradation", "roll_mean_"]):
-            return True
-    return False
-
-
-def _infer_required_window_size(feat_list: List[str]) -> int:
-    # parse integers from names like roll_mean_5, roll_std_20, max_10
-    sizes = []
-    for f in feat_list:
-        parts = f.split("_")
-        for p in reversed(parts):
-            if p.isdigit():
-                sizes.append(int(p))
-                break
-    return max(sizes) if sizes else 20  # default 20 if we need a window but not specified
-
-
-# ---------- Normalization & feature engineering ----------
-def normalize_sensors_and_features(window: List[Dict[str, Any]]):
+# Normalization & feature engineering
+def normalize_sensors_and_features(sensor_data: List[Dict[str, Any]]):
     """
-    Populate sensors_raw with normalized sensor numpy arrays (per-window).
+    Populate sensors_raw with normalized sensor numpy arrays (per- passed sensor data window).
     """
     global sensors_raw, global_baseline
     sensors_raw = {}
@@ -229,14 +210,14 @@ def normalize_sensors_and_features(window: List[Dict[str, Any]]):
         if sensor not in global_baseline:
             raise KeyError(f"Missing baseline for sensor: {sensor}")
         baseline_val = float(global_baseline[sensor])
-        arr = _arr_from_window(window, sensor)
+        arr = _arr_from_sensor_data(sensor_data, sensor)
         norm = (arr - baseline_val) / (abs(baseline_val) + eps)
         sensors_raw[f"{sensor}_norm"] = norm.astype(np.float32)
 
 
-def apply_feature_engineering(window: List[Dict[str, Any]]) -> Dict[str, float]:
+def apply_feature_engineering(sensor_data: List[Dict[str, Any]]) -> Dict[str, float]:
     """
-    Return engineered features for last sample in window.
+    Return engineered features for last sample in sensor_data.
     Provides:
       - normalized_degradation
       - time_position (0..1)
@@ -244,7 +225,7 @@ def apply_feature_engineering(window: List[Dict[str, Any]]) -> Dict[str, float]:
       - normalized last values for normalized sensors
     """
     engineered = {}
-    n = len(window)
+    n = len(sensor_data)
     if n == 0:
         return engineered
 
@@ -266,7 +247,7 @@ def apply_feature_engineering(window: List[Dict[str, Any]]) -> Dict[str, float]:
     engineered["normalized_degradation"] = (pos_sum + neg_sum) / denom
 
     # time_position: use elapsed_minutes/time if available otherwise index position
-    time_arr = _arr_from_window(window, "elapsed_minutes")
+    time_arr = _arr_from_sensor_data(sensor_data, "elapsed_minutes")
     if not np.all(np.isnan(time_arr)):
         tmin = float(np.nanmin(time_arr))
         tmax = float(np.nanmax(time_arr))
@@ -276,11 +257,11 @@ def apply_feature_engineering(window: List[Dict[str, Any]]) -> Dict[str, float]:
         engineered["time_position"] = float((n - 1) / max(1, n - 1))
 
     # per-sensor stats (discover sensors from last sample)
-    last_sample = window[-1]
+    last_sample = sensor_data[-1]
     exclude_keys = {"cycle", "elapsed_hours", "elapsed_minutes", "cycle_id", "time_min", "total_rul", "current_rul", "timestamp"}
     sensor_keys = [k for k in last_sample.keys() if k not in exclude_keys]
     for s in sensor_keys:
-        arr = _arr_from_window(window, s)
+        arr = _arr_from_sensor_data(sensor_data, s)
         engineered[f"{s}_last"] = float(arr[-1]) if arr.size > 0 and not np.isnan(arr[-1]) else 0.0
         engineered[f"{s}_mean_win"] = float(np.nanmean(arr)) if arr.size > 0 else 0.0
         engineered[f"{s}_std_win"] = float(np.nanstd(arr)) if arr.size > 0 else 0.0
@@ -297,8 +278,8 @@ def apply_feature_engineering(window: List[Dict[str, Any]]) -> Dict[str, float]:
     return engineered
 
 
-# ---------- Feature matrix preparation ----------
-def prepare_feature_matrices(window: List[Dict[str, Any]], engineered: Dict[str, float]):
+# Feature matrix preparation
+def prepare_feature_matrices(sensor_data: List[Dict[str, Any]], engineered: Dict[str, float]):
     """
     Build X_clf (for classifiers/regressors using selected_features) and X_base (for base model).
     """
@@ -311,7 +292,7 @@ def prepare_feature_matrices(window: List[Dict[str, Any]], engineered: Dict[str,
 
     # Build classifier vector
     clf_vec = []
-    last_sample = window[-1]
+    last_sample = sensor_data[-1]
     for feat in selected:
         if feat in engineered:
             clf_vec.append(float(engineered[feat]))
@@ -331,7 +312,7 @@ def prepare_feature_matrices(window: List[Dict[str, Any]], engineered: Dict[str,
             for p in reversed(parts):
                 if p.isdigit():
                     num = int(p); break
-            arr = _arr_from_window(window, sensor_candidate)
+            arr = _arr_from_sensor_data(sensor_data, sensor_candidate)
             if "roll_mean" in feat and num:
                 val = float(np.nanmean(arr[-num:])) if arr.size > 0 else 0.0
                 clf_vec.append(val); continue
@@ -393,51 +374,39 @@ def prepare_feature_matrices(window: List[Dict[str, Any]], engineered: Dict[str,
     return X_clf, X_base
 
 
-# ---------- Prediction pipeline ----------
-def predict(h_history: List[Dict[str, Any]]):
+# Prediction pipeline
+def predict(sensor_data: List[Dict[str, Any]]):
     """
     Run the multi-stage inference pipeline.
-    h_history: list of samples (oldest first). predictor_node should pass the window or full history;
-               this function will choose the correct window according to config / feature needs.
+    sensor_data: list of samples. predictor_node passes.
+        
+        - stage0: LONG_TERM vs NEAR_TERM (Classifier)
+            if LONG_TERM: BASE MODEL (regression)
+            if NEAR_TERM:
+                - stage1: NON_CRITICAL vs CRITICAL (Classifier)
+                    if NON_CRITICAL: BASE MODEL (regression)
+                    if CRITICAL: STAGE2A regression model
+    
     Returns dict with: rul_min, regime, active_model, stage0_prob, stage1_prob
     """
     global models, base_config, stage1_config, selected_features
 
-    if not isinstance(h_history, list) or len(h_history) == 0:
+    if not isinstance(sensor_data, list) or len(sensor_data) == 0:
         raise ValueError("predict requires non-empty list of dicts")
 
     # ensure models/configs loaded
     if models["base"] is None and (not base_config):
         load_models()
 
-    # determine window size:
-    # 1) check inference window in configs
-    cfg_window = None
-    if base_config and "inference_window" in base_config:
-        cfg_window = int(base_config["inference_window"])
-    elif stage1_config and "inference_window" in stage1_config:
-        cfg_window = int(stage1_config["inference_window"])
-
-    # 2) if not supplied and features require window, infer from selected_features or base_config
-    feats_to_check = selected_features or base_config.get("classifier_features", []) or []
-    requires_win = _requires_window(feats_to_check)
-    if cfg_window is None and requires_win:
-        cfg_window = _infer_required_window_size(feats_to_check)
-
-    # 3) slice window if needed
-    if cfg_window is None or cfg_window <= 1:
-        window = [h_history[-1]]  # only last sample
-    else:
-        window = h_history[-cfg_window:] if len(h_history) >= cfg_window else h_history
-
     # normalization and engineering
-    normalize_sensors_and_features(window)
-    engineered = apply_feature_engineering(window)
-    X_clf, X_base = prepare_feature_matrices(window, engineered)
+    normalize_sensors_and_features(sensor_data)
+    engineered = apply_feature_engineering(sensor_data)
+    X_clf, X_base = prepare_feature_matrices(sensor_data, engineered)
 
     # Stage-0
     stage0_prob = None
     stage0_pred = None
+
     if models.get("stage0") is not None:
         try:
             probs = models["stage0"].predict_proba(X_clf)
@@ -455,18 +424,8 @@ def predict(h_history: List[Dict[str, Any]]):
         # default assume NEAR_TERM to exercise short-term pipeline
         stage0_pred = 1; stage0_prob = 1.0
 
-    # Stage-0 threshold selection (prefer stage0_threshold file > base_config > default)
+    # Stage-0 threshold 
     thresh = 0.7
-    if base_config and "stage0_threshold" in base_config:
-        try:
-            thresh = float(base_config.get("stage0_threshold", thresh))
-        except Exception:
-            pass
-    if stage0_threshold and "prob_threshold" in stage0_threshold:
-        try:
-            thresh = float(stage0_threshold["prob_threshold"])
-        except Exception:
-            pass
 
     # LONG_TERM -> Base model
     if stage0_pred == 0:
@@ -556,7 +515,6 @@ def predict(h_history: List[Dict[str, Any]]):
                     "notes": str(e)
                 }
 
-# Yeni yardımcı: RUL minute değerini config'e göre clamp eder
 def _clamp_rul_minutes(val_min: float) -> float:
     global base_config, stage2a_config
     v = float(val_min)
@@ -569,24 +527,14 @@ def _clamp_rul_minutes(val_min: float) -> float:
         except Exception:
             pass
 
-    # maximum: prefer stage2a_config['max_rul_min'], fallback to base_config['max_rul_min'] or legacy key
+    # maximum: prefer stage2a_config['max_rul_min']
     max_min = None
     if stage2a_config and "max_rul_min" in stage2a_config:
         try:
             max_min = float(stage2a_config["max_rul_min"])
         except Exception:
             max_min = None
-    elif base_config:
-        if "max_rul_min" in base_config:
-            try:
-                max_min = float(base_config["max_rul_min"])
-            except Exception:
-                max_min = None
-        elif "stage2a_max_minutes" in base_config:
-            try:
-                max_min = float(base_config["stage2a_max_minutes"])
-            except Exception:
-                max_min = None
+
 
     if max_min is not None:
         v = min(v, max_min)

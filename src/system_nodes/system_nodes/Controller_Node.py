@@ -88,12 +88,19 @@ class Controller_Node(Node):
                 cycle = prediction.get('cycle')
                 rul_payload = prediction.get('rul')
 
+                # Accept both dict payloads and bare numeric rul values
+                rul_min = None
+                rul_unit = ''
                 if isinstance(rul_payload, dict):
                     rul_min = rul_payload.get('rul_min')
                     rul_unit = (rul_payload.get('unit') or '').lower()
-                else:
-                    rul_min = None
-                    rul_unit = ''
+                elif isinstance(rul_payload, (int, float, str)):
+                    try:
+                        rul_min = float(rul_payload)
+                        rul_unit = 'min'
+                    except Exception:
+                        rul_min = None
+                        rul_unit = ''
 
                 if rul_min is None or cycle is None:
                     self.get_logger().warning("Incomplete prediction payload")
@@ -143,12 +150,19 @@ class Controller_Node(Node):
                 cycle = prediction.get('cycle')
                 rul_payload = prediction.get('rul')
 
+                # Accept both dict payloads and bare numeric rul values
+                rul_min = None
+                rul_unit = ''
                 if isinstance(rul_payload, dict):
                     rul_min = rul_payload.get('rul_min')
                     rul_unit = (rul_payload.get('unit') or '').lower()
-                else:
-                    rul_min = None
-                    rul_unit = ''
+                elif isinstance(rul_payload, (int, float, str)):
+                    try:
+                        rul_min = float(rul_payload)
+                        rul_unit = 'min'
+                    except Exception:
+                        rul_min = None
+                        rul_unit = ''
 
                 if rul_min is None or cycle is None:
                     self.get_logger().warning("Incomplete prediction payload")
@@ -241,10 +255,10 @@ class Controller_Node(Node):
         
         # Debug log for decision inputs
         self.get_logger().info(
-            f"[TEMP:DEBUG] CONTROL_DECISION: machine={machine}, cycle={cycle}, rul={rul}, "
-            f"prev_rul={prev_rul}, remaining_min={remaining_min}, current_state={current_state}, "
-            f"CRITICAL={critical}, WARNING={warning}"
-        )
+                                f"[TEMP:DEBUG] CONTROL_DECISION: machine={machine}, cycle={cycle}, rul={rul}, "
+                                f"prev_rul={prev_rul}, remaining_min={remaining_min}, current_state={current_state}, "
+                                f"CRITICAL={critical}, WARNING={warning}"
+                            )
 
         # sudden *increases* as likely glitches; sudden drops can be real (worse health)
         # and should not be ignored.
@@ -290,9 +304,9 @@ class Controller_Node(Node):
 
         # Debug log for state transition check
         self.get_logger().info(
-            f"[TEMP:DEBUG] STATE_CHECK: machine={machine}, current_state={current_state}, "
-            f"new_state={new_state}, command={command}"
-        )
+                                    f"[TEMP:DEBUG] STATE_CHECK: machine={machine}, current_state={current_state}, "
+                                    f"new_state={new_state}, command={command}"
+                                )
 
         # Check if the state is escalating or not
         # Only publish if the machine state is escalating
@@ -302,9 +316,9 @@ class Controller_Node(Node):
             recovery_time_min, remaining_min = self.compute_maintenance_schedule(machine)
 
             self.get_logger().info(
-                f"[TEMP:DEBUG] STATE_ESCALATION: {machine} state {current_state} -> {new_state}, "
-                f"recovery_time_min={recovery_time_min}, remaining_min={remaining_min}"
-            )
+                                        f"[TEMP:DEBUG] STATE_ESCALATION: {machine} state {current_state} -> {new_state}, "
+                                        f"recovery_time_min={recovery_time_min}, remaining_min={remaining_min}"
+                                    )
 
             control_msg = String()
             control_msg.data = json.dumps({
