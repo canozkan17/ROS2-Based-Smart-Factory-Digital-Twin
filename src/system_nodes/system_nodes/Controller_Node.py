@@ -266,9 +266,12 @@ class Controller_Node(Node):
             self.get_logger().warning("RUL spike detected (upward), ignoring")
             return
 
+        reason = None
+
         # HARD CRITICAL ZONE
         if rul <= critical:
             command = "SHUTDOWN"
+            reason = "local_rul<=critical"
             self.get_logger().info(f"[TEMP:DEBUG] DECISION: SHUTDOWN (rul={rul} <= CRITICAL={critical})")
 
         # WARNING ZONE
@@ -278,18 +281,21 @@ class Controller_Node(Node):
 
             if rul >= required_time: # job can be finished
                 command = "SLOW_DOWN"
+                reason = "rul>=required_time_slowdown"
                 self.get_logger().info(f"[TEMP:DEBUG] DECISION: SLOW_DOWN (rul={rul} >= required_time={required_time})")
             else:                       # job cant be finished
                 command = "SHUTDOWN"
+                reason = "rul<required_time_shutdown"
                 self.get_logger().info(f"[TEMP:DEBUG] DECISION: SHUTDOWN (rul={rul} < required_time={required_time})")
 
         # SAFE ZONE
         else:
             command = "NORMAL_OPERATION"
+            reason = "rul_safe"
 
-        self.publish_control_CMD(rul, cycle, command, machine)
+        self.publish_control_CMD(rul, cycle, command, machine, reason=reason)
 
-    def publish_control_CMD(self, rul:float, cycle:int, command:str, machine=None):
+    def publish_control_CMD(self, rul:float, cycle:int, command:str, machine=None, reason: str = None): # type: ignore
         """
         Controls if the machine command has been changed from Normal_Operation to another state.
         Publish control command message to the appropriate topic.
@@ -326,11 +332,12 @@ class Controller_Node(Node):
                                             "cycle": cycle,
                                             "rul": rul,
                                             "command": command,
-                                            "recovery_time_min": recovery_time_min
+                                            "recovery_time_min": recovery_time_min,
+                                            "reason": reason
                                         })
             self.control_cmd_publishers[machine].publish(control_msg)                       # informs the machine
             self.publish_maintenance_schedule(machine, recovery_time_min, remaining_min)    # informs the job scheduler
-            self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}")
+            self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}, Reason={reason}")
             # trigger the maintenance scheduling
 
     def compute_maintenance_schedule(self, machine=None):

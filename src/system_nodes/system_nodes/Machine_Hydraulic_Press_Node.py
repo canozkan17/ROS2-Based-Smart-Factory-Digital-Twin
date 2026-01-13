@@ -168,17 +168,19 @@ class Machine_Hydraulic_Press_Node(Node):
 
         # Extract control command and recovery time from the message
         command = control_msg.get("command", "NORMAL_OPERATION")
+        machine = control_msg.get("machine", "hydraulic_press")
+
         with self._state_lock:
             self.maintenance_cycles_remaining = control_msg.get("recovery_time_min", 0)
 
             if command == "SHUTDOWN":
-                self.get_logger().info(f"Received SHUTDOWN command. Stopping current task.")
+                self.get_logger().info(f"Received SHUTDOWN command for machine {machine}. Stopping current task.")
                 self.control_cmd = "SHUTDOWN"
                 self.in_maintenance = True
                 
             elif command == "SLOW_DOWN":
                 self.control_cmd = "SLOW_DOWN"
-                self.get_logger().info(f"Received SLOW_DOWN command. Slowing down operation.")
+                self.get_logger().info(f"Received SLOW_DOWN command for machine {machine}. Slowing down operation.")
                 self.degredation_factor *= 0.9  # slowing down degradation by 10%
             
             

@@ -434,7 +434,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
-        base_min = _clamp_rul_minutes(base_min)
+        base_min = _clamp_rul_minutes("base", base_min)
         return {
                     "rul_min": float(base_min),
                     "regime": "LONG_TERM",
@@ -467,7 +467,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
-        base_min = _clamp_rul_minutes(base_min)
+        base_min = _clamp_rul_minutes("base", base_min)
         return {
                     "rul_min": float(base_min),
                     "regime": "NEAR_TERM",
@@ -484,7 +484,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
-        base_min = _clamp_rul_minutes(base_min)
+        base_min = _clamp_rul_minutes("base", base_min)
         return {
                 "rul_min": float(base_min),
                 "regime": "CRITICAL",
@@ -497,7 +497,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
         pred_log = float(models["stage2a"].predict(X_clf).ravel()[0])
         pred_min = float(np.expm1(pred_log))
         # clamp according to config (min from base_config and max from stage2a_config)
-        pred_min = _clamp_rul_minutes(pred_min)
+        pred_min = _clamp_rul_minutes("stage2a", pred_min)
         return {
                     "rul_min": pred_min,
                     "regime": "CRITICAL",
@@ -515,12 +515,12 @@ def predict(sensor_data: List[Dict[str, Any]]):
                     "notes": str(e)
                 }
 
-def _clamp_rul_minutes(val_min: float) -> float:
+def _clamp_rul_minutes(model: str, val_min: float) -> float:
     global base_config, stage2a_config
     v = float(val_min)
 
     # minimum: base_config['min_rul_hours'] -> minutes
-    if base_config and "min_rul_hours" in base_config:
+    if model == "base" and base_config and "min_rul_hours" in base_config:
         try:
             min_hours = float(base_config["min_rul_hours"])
             v = max(v, min_hours * 60.0)
@@ -529,7 +529,7 @@ def _clamp_rul_minutes(val_min: float) -> float:
 
     # maximum: prefer stage2a_config['max_rul_min']
     max_min = None
-    if stage2a_config and "max_rul_min" in stage2a_config:
+    if model == "stage2a" and stage2a_config and "max_rul_min" in stage2a_config:
         try:
             max_min = float(stage2a_config["max_rul_min"])
         except Exception:
