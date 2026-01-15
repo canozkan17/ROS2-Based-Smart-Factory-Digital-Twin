@@ -54,7 +54,7 @@ class Predictor_Node(Node):
 
         # Process Pump variables
         self.pump_history = []                      # for all the cycles
-        self.pump_rolling_window = 5                # minimum samples for rolling calculations (matches WINDOW_SHORT)
+        self.pump_rolling_window = 20                # minimum samples for rolling calculations (matches WINDOW_SHORT)
         self.predicted_rul_process_pump = None
 
         # Hydraulic Press variables
@@ -90,6 +90,22 @@ class Predictor_Node(Node):
                 self.get_logger().info("Reset Process_Pump history for new run.")
                 try:
                     process_pump_handler.reset_state()
+                except Exception:
+                    pass
+
+            # Conservative cycle-change detection to avoid wiping needed sequential windows
+            if len(self.pump_history) > 0:
+                last_cycle = self.pump_history[-1].get("cycle")
+                try:
+                    rc = int(received_data.get("cycle"))
+                    lc = int(last_cycle)
+                    if rc == 0 or rc < lc or (rc - lc) > 1000:
+                        self.get_logger().info(f"[TEMP:DEBUG] PREDICTOR detected NEW RUN or large jump for process_pump: last={lc} -> new={rc}; resetting history")
+                        self.pump_history = []
+                        try:
+                            process_pump_handler.reset_state()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -148,8 +164,27 @@ class Predictor_Node(Node):
                 except Exception:
                     pass
 
+            # Conservative cycle-change detection to avoid wiping needed sequential windows
+            if len(self.hydraulic_press_history) > 0:
+                last_cycle = self.hydraulic_press_history[-1].get("cycle")
+                try:
+                    rc = int(received_data.get("cycle"))
+                    lc = int(last_cycle)
+                    # Reset only on clear new-run markers OR wrap/major jump backwards OR very large forward jump
+                    if rc == 0 or rc < lc or (rc - lc) > 1000:
+                        self.get_logger().info(f"[TEMP:DEBUG] PREDICTOR detected NEW RUN or large jump for hydraulic_press: last={lc} -> new={rc}; resetting history")
+                        self.hydraulic_press_history = []
+                        try:
+                            hydraulic_press_handler.reset_state()
+                        except Exception:
+                            pass
+                except Exception:
+                    # If cycle is non-int or missing, don't reset (avoid aggressive clearing on malformed data)
+                    pass
+
             # update history and keep only last max_hydraulic_press_history_length entries
             self.hydraulic_press_history.append(received_data)
+
             if len(self.hydraulic_press_history) < self.hydraulic_press_rolling_window:
                 self.get_logger().warning(
                                             f"Not enough history for Hydraulic_Press: {len(self.hydraulic_press_history)}/{self.hydraulic_press_rolling_window}"
@@ -195,6 +230,12 @@ class Predictor_Node(Node):
         Machine specific logging due to different payload structures.
         """
         if machine is not None and prediction_payload is not None and cycle is not None:
+
+            # TEMP:DEBUG - log full payload before publishing
+            try:
+                self.get_logger().info(f"[TEMP:DEBUG] PREDICTION_PAYLOAD: machine={machine}, cycle={cycle}, payload={json.dumps(prediction_payload)}")
+            except Exception:
+                pass
 
             prediction_msg = String()
             prediction_msg.data = json.dumps({

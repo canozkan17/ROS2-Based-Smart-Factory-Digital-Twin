@@ -7,7 +7,7 @@ RUL prediction using two-stage XGBoost models for process pump machine.
 Architecture:
 - BASE Model: XGBoost regressor for general RUL prediction
 - Stage-1 Classifier: Binary classifier detecting critical region (RUL <= 100)
-- Stage-2A Regressor: Specialized regressor for critical region (RUL <= 50)
+- Stage-2A Regressor: Specialized regressor for critical region (RUL <= 30)
 
 Decision Logic (with hysteresis):
 - SAFE -> CRITICAL: crit_prob >= 0.6
@@ -36,16 +36,25 @@ WINDOW_LONG = 20
 
 # Selected features (order matters - must match model training)
 SELECTED_FEATURES = [
-                        "degradation_index",
                         "vibration_energy",
                         "vibration",
                         "temp_motor",
-                        "pressure"
+                        "pressure",
+                        "vibration_roll_std_20",
+                        "vib_motor",
+                        "vib_motor_roll_std_20",
+                        "temp_motor_roll_std_20",
+                        "pressure_stability",
+                        "motor_pump_coupling",
+                        "pressure_roll_std_20"
                     ]
 
 # Stage-1 Classifier thresholds (from training notebook)
-THRESH_ENTER = 0.6   # Enter critical state
-THRESH_EXIT = 0.2    # Exit critical state
+THRESH_ENTER = 0.95   # Enter critical state
+THRESH_EXIT = 0.20    # Exit critical state
+
+# Maximum RUL accepted by Stage-2A regressor (aligned with training notebook)
+CRITICAL_MAX_RUL = 30
 
 # Buffer size for rolling calculations
 MAX_BUFFER_SIZE = WINDOW_LONG + 10
@@ -97,19 +106,26 @@ def _find_model_directory() -> Path:
 
 def load_models() -> None:
     """
-    Load all models and feature stats.
+    Load all models, feature stats, selected_features and stage-1 thresholds.
     Primary: ONNX Runtime (optimized for RPi)
     Fallback: XGBoost JSON
+
+    The function will also read the following files from the model directory:
+      - process_pump_feature_stats.json  (min/max per raw sensor)
+      - selected_process_pump_features.json (ordered list of features used by models)
+      - process_pump_stage1_config.json (BEST_WEIGHT and thresholds)
+
+    If found, these will update module globals: _feature_stats, SELECTED_FEATURES, THRESH_ENTER, THRESH_EXIT, CRITICAL_MAX_RUL
     """
     global _base_model, _stage1_classifier, _stage2a_regressor
-    global _feature_stats, _initialized
-    
+    global _feature_stats, _initialized, SELECTED_FEATURES, THRESH_ENTER, THRESH_EXIT, CRITICAL_MAX_RUL
+
     if _initialized:
         return
-    
+
     model_dir = _find_model_directory()
     print(f"[process_pump_handler] Loading models from: {model_dir}")
-    
+
     # Load feature stats for normalization
     stats_path = model_dir / "process_pump_feature_stats.json"
     if stats_path.exists():
@@ -123,63 +139,100 @@ def load_models() -> None:
                             "temp_motor": {"min": 40.0, "max": 1000.0},
                             "pressure": {"min": -100.0, "max": 10.0}
                         }
-    
+
+    # Load selected features list if available (ensures ordering matches training)
+    sf_path = model_dir / "selected_process_pump_features.json"
+    if sf_path.exists():
+        try:
+            with open(sf_path, 'r') as f:
+                sf = json.load(f)
+            if isinstance(sf, list) and len(sf) > 0:
+                SELECTED_FEATURES = sf
+                print(f"[process_pump_handler] Loaded selected features ({len(SELECTED_FEATURES)}): {SELECTED_FEATURES}")
+            else:
+                print(f"[process_pump_handler] WARNING: selected features file malformed, using defaults")
+        except Exception as e:
+            print(f"[process_pump_handler] WARNING: Failed to read selected features: {e}")
+    else:
+        print(f"[process_pump_handler] WARNING: selected features file not found, using built-in defaults")
+
+    # Load training config (thresholds, weights)
+    cfg_path = model_dir / "process_pump_stage1_config.json"
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, 'r') as f:
+                cfg = json.load(f)
+            # Update thresholds if present
+            THRESH_ENTER = float(cfg.get('THRESH_ENTER', THRESH_ENTER))
+            THRESH_EXIT = float(cfg.get('THRESH_EXIT', THRESH_EXIT))
+            # Optional: allow specifying the CRITICAL window used by Stage-2A
+            try:
+                CRITICAL_MAX_RUL = int(cfg.get('CRITICAL_MAX_RUL', CRITICAL_MAX_RUL))
+            except Exception:
+                CRITICAL_MAX_RUL = int(float(cfg.get('CRITICAL_MAX_RUL', CRITICAL_MAX_RUL)))
+
+            print(f"[process_pump_handler] Loaded stage1 config: THRESH_ENTER={THRESH_ENTER}, THRESH_EXIT={THRESH_EXIT}, CRITICAL_MAX_RUL={CRITICAL_MAX_RUL}")
+        except Exception as e:
+            print(f"[process_pump_handler] WARNING: Failed to read stage1 config: {e}")
+    else:
+        print(f"[process_pump_handler] WARNING: stage1 config not found, using defaults THRESH_ENTER={THRESH_ENTER}, THRESH_EXIT={THRESH_EXIT}")
+
     # Try ONNX first (optimized for RPi)
     try:
         import onnxruntime as ort
-        
+
         # Session options optimized for RPi
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2
         opts.inter_op_num_threads = 1
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        
+
         providers = ['CPUExecutionProvider']
-        
+
         _base_model = ort.InferenceSession(
-                                                str(model_dir / "process_pump_base_model.onnx"),
-                                                sess_options=opts,
-                                                providers=providers
-                                            )
-        
+                                            str(model_dir / "process_pump_base_model.onnx"),
+                                            sess_options=opts,
+                                            providers=providers
+                                        )
+
         _stage1_classifier = ort.InferenceSession(
                                                     str(model_dir / "process_pump_stage1_classifier.onnx"),
                                                     sess_options=opts,
                                                     providers=providers
                                                 )
-        
+
         _stage2a_regressor = ort.InferenceSession(
                                                     str(model_dir / "process_pump_stage2a_regressor.onnx"),
                                                     sess_options=opts,
                                                     providers=providers
                                                 )
-        
+
         _initialized = True
         print("[process_pump_handler] ONNX models loaded successfully")
         return
-        
+
     except ImportError:
         print("[process_pump_handler] ONNX Runtime not available, trying XGBoost")
     except Exception as e:
         print(f"[process_pump_handler] ONNX load failed: {e}, trying XGBoost")
-    
+
     # Fallback to XGBoost JSON
     try:
         from xgboost import XGBRegressor, XGBClassifier
-        
+
         _base_model = XGBRegressor()
         _base_model.load_model(str(model_dir / "process_pump_base_model.json"))
-        
+
         _stage1_classifier = XGBClassifier()
         _stage1_classifier.load_model(str(model_dir / "process_pump_stage1_classifier.json"))
-        
+
         _stage2a_regressor = XGBRegressor()
         _stage2a_regressor.load_model(str(model_dir / "process_pump_stage2a_regressor.json"))
-        
+
         _initialized = True
         print("[process_pump_handler] XGBoost JSON models loaded successfully")
         return
-        
+
     except Exception as e:
         raise RuntimeError(f"Failed to load models: {e}")
 
@@ -246,46 +299,92 @@ def _sync_buffer_from_history(history: List[Dict[str, Any]]) -> None:
 # FEATURE ENGINEERING
 def _compute_features() -> Optional[np.ndarray]:
     """
-    Compute features from buffer matching training exactly.
-    
-    Training Feature Engineering Summary:
-    - degradation_index: Per-machine normalized (vib + temp + pressure_inv) / 3
-    - vibration_energy: rolling_mean(vibration, 5) ** 2
-    - vibration: raw value
-    - temp_motor: raw value
-    - pressure: raw value
-    
+    Compute features from the internal buffer to match training features.
+
+    - Implementation is pandas-free and uses numpy over the in-memory buffer.
+    - It supports a set of well-known features created during training and will
+      build an output array in the exact order of `SELECTED_FEATURES`.
+
     Returns:
-        Feature array shape (1, 5) or None if insufficient data
+        np.ndarray shape (1, n_features) or None if insufficient data
     """
     with _buffer_lock:
         if len(_data_buffer) < 1:
             return None
-        
-        # Convert buffer to arrays for efficient computation
+
         n = len(_data_buffer)
-        vibration = np.array([d['vibration'] for d in _data_buffer])
-        temp_motor = np.array([d['temp_motor'] for d in _data_buffer])
-        pressure = np.array([d['pressure'] for d in _data_buffer])
-        
-        # Latest values (raw features)
-        latest_vib = vibration[-1]
-        latest_temp = temp_motor[-1]
-        latest_pres = pressure[-1]
-        
-        # vibration_energy 
-        # Training: grouped['vibration'].rolling(window=5, min_periods=1).mean() ** 2
-        window = min(WINDOW_SHORT, n)
-        vib_roll_mean = np.mean(vibration[-window:])
-        vibration_energy = vib_roll_mean ** 2
-        
-        # degradation_index 
-        # Training uses per-machine normalization over ENTIRE lifecycle.
-        # At runtime, we use GLOBAL min/max from training data as approximation.
-        # This works because:
-        #   - Start of life: values near global min -> low degradation_index
-        #   - End of life: values near global max -> high degradation_index
-        
+        # Convert buffer to numpy arrays for efficient ops
+        vibration = np.array([d['vibration'] for d in _data_buffer], dtype=float)
+        temp_motor = np.array([d['temp_motor'] for d in _data_buffer], dtype=float)
+        pressure = np.array([d['pressure'] for d in _data_buffer], dtype=float)
+        vib_motor = np.array([d['vib_motor'] for d in _data_buffer], dtype=float)
+
+        latest_vib = float(vibration[-1])
+        latest_temp = float(temp_motor[-1])
+        latest_pres = float(pressure[-1])
+        latest_vib_motor = float(vib_motor[-1])
+
+        def mean_last(arr, w):
+            w = min(int(w), len(arr))
+            if w <= 0:
+                return float(arr[-1])
+            return float(np.mean(arr[-w:]))
+
+        def std_last(arr, w):
+            w = min(int(w), len(arr))
+            if w <= 1:
+                return 0.0
+            # pandas uses ddof=1 by default for rolling.std(), match that
+            return float(np.std(arr[-w:], ddof=1))
+
+        def max_last(arr, w):
+            w = min(int(w), len(arr))
+            return float(np.max(arr[-w:]))
+
+        # Compute a set of candidate features (covering typical selected features)
+        feat = {}
+
+        # Raw values
+        feat['vibration'] = latest_vib
+        feat['temp_motor'] = latest_temp
+        feat['pressure'] = latest_pres
+        feat['vib_motor'] = latest_vib_motor
+
+        # Rolling means for each sensor (short and long windows)
+        for arr_name, arr in [('vibration', vibration), ('temp_motor', temp_motor), ('pressure', pressure), ('vib_motor', vib_motor)]:
+            feat[f'{arr_name}_roll_mean_5'] = mean_last(arr, WINDOW_SHORT)
+            feat[f'{arr_name}_roll_mean_20'] = mean_last(arr, WINDOW_LONG)
+
+        # Rolling stds (long window = 20; short = 5)
+        feat['vibration_roll_std_20'] = std_last(vibration, WINDOW_LONG)
+        feat['vib_motor_roll_std_20'] = std_last(vib_motor, WINDOW_LONG)
+        feat['temp_motor_roll_std_20'] = std_last(temp_motor, WINDOW_LONG)
+        feat['pressure_roll_std_20'] = std_last(pressure, WINDOW_LONG)
+
+        feat['vibration_roll_std_5'] = std_last(vibration, WINDOW_SHORT)
+        feat['vib_motor_roll_std_5'] = std_last(vib_motor, WINDOW_SHORT)
+        feat['temp_motor_roll_std_5'] = std_last(temp_motor, WINDOW_SHORT)
+        feat['pressure_roll_std_5'] = std_last(pressure, WINDOW_SHORT)
+
+        # Energy / volatility
+        feat['vibration_energy'] = (feat['vibration_roll_mean_5']) ** 2
+        feat['vibration_max_10'] = max_last(vibration, 10)
+
+        # Deviation from long mean
+        feat['vibration_dev_long'] = latest_vib - feat['vibration_roll_mean_20']
+
+        # Pressure stability (matching training formula)
+        pressure_std = max(feat.get('pressure_roll_std_20', 0.0), 1e-4)
+        feat['pressure_stability'] = float(np.log1p(1.0 / pressure_std))
+
+        # Motor-pump coupling with clipping (avoid division by zero)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            coupling = latest_vib_motor / latest_vib if latest_vib != 0 else np.nan
+        if not np.isfinite(coupling):
+            coupling = 1.0
+        feat['motor_pump_coupling'] = float(np.clip(coupling, 0.0, 10.0))
+
+        # Degradation index (approx using global min/max from training)
         if _feature_stats:
             vib_min = _feature_stats['vibration']['min']
             vib_max = _feature_stats['vibration']['max']
@@ -294,68 +393,173 @@ def _compute_features() -> Optional[np.ndarray]:
             pres_min = _feature_stats['pressure']['min']
             pres_max = _feature_stats['pressure']['max']
         else:
-            # Fallback defaults
             vib_min, vib_max = 0.0, 8.0
             temp_min, temp_max = 40.0, 1000.0
             pres_min, pres_max = -100.0, 10.0
-        
-        # Normalize each sensor (matching training formula)
+
         eps = 1e-6
         vib_norm = (latest_vib - vib_min) / (vib_max - vib_min + eps)
         temp_norm = (latest_temp - temp_min) / (temp_max - temp_min + eps)
-        # Pressure is INVERTED in training (lower pressure = more degraded)
         pres_norm = 1.0 - (latest_pres - pres_min) / (pres_max - pres_min + eps)
-        
-        # Clip to [0, 1] range
-        vib_norm = np.clip(vib_norm, 0.0, 1.0)
-        temp_norm = np.clip(temp_norm, 0.0, 1.0)
-        pres_norm = np.clip(pres_norm, 0.0, 1.0)
-        
-        degradation_index = (vib_norm + temp_norm + pres_norm) / 3.0
-        
-        #  Build feature vector 
-        # Order MUST match SELECTED_FEATURES and model training
-        features = np.array([
-                                degradation_index,              # 0: degradation_index
-                                vibration_energy,               # 1: vibration_energy
-                                latest_vib,                     # 2: vibration
-                                latest_temp,                    # 3: temp_motor
-                                latest_pres                     # 4: pressure
-                            ], dtype=np.float32).reshape(1, -1)
-        
-        return features
+
+        vib_norm = float(np.clip(vib_norm, 0.0, 1.0))
+        temp_norm = float(np.clip(temp_norm, 0.0, 1.0))
+        pres_norm = float(np.clip(pres_norm, 0.0, 1.0))
+
+        feat['degradation_index'] = (vib_norm + temp_norm + pres_norm) / 3.0
+
+        # Volatility surge (short std - long std, clipped)
+        for s_name, arr in [('vibration', vibration), ('temp_motor', temp_motor), ('pressure', pressure), ('vib_motor', vib_motor)]:
+            short_std = std_last(arr, WINDOW_SHORT)
+            long_std = std_last(arr, WINDOW_LONG)
+            feat[f'{s_name}_volatility_surge'] = float(max(0.0, short_std - long_std))
+
+        # Provide a generic slope estimate (diff of long rolling mean)
+        # Slope approximated as current long_mean - previous long_mean (if available)
+        if len(vibration) >= 2:
+            prev_long_mean = float(np.mean(vibration[-(WINDOW_LONG+1):-1])) if len(vibration) > WINDOW_LONG else float(np.mean(vibration[:-1]))
+            feat['vibration_slope_20'] = feat['vibration_roll_mean_20'] - prev_long_mean
+        else:
+            feat['vibration_slope_20'] = 0.0
+
+        # Also include temp_motor slope for consistency with training features
+        if len(temp_motor) >= 2:
+            prev_long_mean_t = float(np.mean(temp_motor[-(WINDOW_LONG+1):-1])) if len(temp_motor) > WINDOW_LONG else float(np.mean(temp_motor[:-1]))
+            feat['temp_motor_slope_20'] = feat['temp_motor_roll_mean_20'] - prev_long_mean_t
+        else:
+            feat['temp_motor_slope_20'] = 0.0
+
+        # Short-window (near-time) features to match Stage-2A inputs
+        WINDOW_NEAR = 3
+        for arr_name, arr in [('vibration', vibration), ('temp_motor', temp_motor), ('pressure', pressure), ('vib_motor', vib_motor)]:
+            feat[f'{arr_name}_roll_mean_3'] = mean_last(arr, WINDOW_NEAR)
+            feat[f'{arr_name}_roll_std_3'] = std_last(arr, WINDOW_NEAR)
+            # slope_3 approximated as mean(last 3) - mean(prev 3)
+            if len(arr) >= 2:
+                prev_mean_3 = mean_last(arr[:-1], WINDOW_NEAR) if len(arr) > 1 else mean_last(arr, WINDOW_NEAR)
+                feat[f'{arr_name}_slope_3'] = float(feat[f'{arr_name}_roll_mean_3'] - prev_mean_3)
+            else:
+                feat[f'{arr_name}_slope_3'] = 0.0
+
+            # delta 1 step
+            if len(arr) >= 2:
+                feat[f'{arr_name}_delta_1'] = float(arr[-1] - arr[-2])
+            else:
+                feat[f'{arr_name}_delta_1'] = 0.0
+
+        # Acceleration features (change of long slope over ~5 steps)
+        for s_name, arr in [('vibration', vibration), ('temp_motor', temp_motor)]:
+            # compute slope now and slope 5 steps ago (approx)
+            def slope_long(arr_in, shift=0):
+                # slope approx: mean(last window) - mean(prev window)
+                if len(arr_in) <= 1 + shift:
+                    return 0.0
+                cur_mean = mean_last(arr_in[:-shift] if shift>0 else arr_in, WINDOW_LONG)
+                prev_mean = mean_last(arr_in[:-(1+shift)] if len(arr_in) > 1+shift else arr_in[:-1], WINDOW_LONG)
+                return float(cur_mean - prev_mean)
+
+            slope_now = slope_long(arr, shift=0)
+            slope_5ago = slope_long(arr, shift=5)
+            feat[f'{s_name}_acceleration'] = float(slope_now - slope_5ago)
+
+        # degradation diffs (1 and 5 steps) using historical values if present
+        def compute_degradation_at_index(idx):
+            # idx: -1 (latest), -2 (prev), -5
+            try:
+                v = float(vibration[idx])
+                t = float(temp_motor[idx])
+                p = float(pressure[idx])
+            except Exception:
+                return None
+            vib_n = (v - vib_min) / (vib_max - vib_min + eps)
+            tmp_n = (t - temp_min) / (temp_max - temp_min + eps)
+            pres_n = 1.0 - (p - pres_min) / (pres_max - pres_min + eps)
+            vib_n = float(np.clip(vib_n, 0.0, 1.0))
+            tmp_n = float(np.clip(tmp_n, 0.0, 1.0))
+            pres_n = float(np.clip(pres_n, 0.0, 1.0))
+            return (vib_n + tmp_n + pres_n) / 3.0
+
+        latest_deg = feat['degradation_index']
+        prev_deg = compute_degradation_at_index(-2)
+        deg_5 = compute_degradation_at_index(-5)
+
+        feat['degradation_diff_1'] = float(latest_deg - prev_deg) if prev_deg is not None else 0.0
+        feat['degradation_diff_5'] = float(latest_deg - deg_5) if deg_5 is not None else 0.0
+
+        # Recent max features (captures spikes)
+        for s in ['vibration', 'vib_motor']:
+            feat[f'{s}_max_10'] = max_last(vibration if s=='vibration' else vib_motor, 10)
+
+        # Now produce feature vector ordered by SELECTED_FEATURES
+        if not isinstance(SELECTED_FEATURES, list) or len(SELECTED_FEATURES) == 0:
+            # Fallback to a sensible default ordering (backwards compatible)
+            sel = ['degradation_index', 'vibration_energy', 'vibration', 'temp_motor', 'pressure']
+        else:
+            sel = SELECTED_FEATURES
+
+        missing = [f for f in sel if f not in feat]
+        if missing:
+            # Don't crash in production; fill missing features with zeros and warn
+            for m in missing:
+                feat[m] = 0.0
+            print(f"[process_pump_handler] WARNING: Missing runtime features filled with 0: {missing}")
+
+        arr = np.array([feat[f] for f in sel], dtype=np.float32).reshape(1, -1)
+        return arr
 
 
 
 # INFERENCE
 def _run_inference_onnx(X: np.ndarray) -> tuple:
     """Run inference using ONNX Runtime."""
-    input_name = _base_model.get_inputs()[0].name           # type: ignore
-    
+    # Use each session's input name to avoid mismatches
+    input_name_base = _base_model.get_inputs()[0].name           # type: ignore
+    input_name_clf = _stage1_classifier.get_inputs()[0].name     # type: ignore
+    input_name_stg2 = _stage2a_regressor.get_inputs()[0].name    # type: ignore
+
     # Stage-1: Classifier
-    stg1_outputs = _stage1_classifier.run(None, {input_name: X})  # type: ignore
-    label = int(np.asarray(stg1_outputs[0]).squeeze())
-    
-    # Extract probability (output[1] is probabilities for XGBoost classifier)
+    stg1_outputs = _stage1_classifier.run(None, {input_name_clf: X})  # type: ignore
+
+    # stg1_outputs layout may vary depending on conversion; try to robustly extract probability for class 1
+    label = 0
+    crit_prob = 0.0
     try:
+        # If first output is label
+        label = int(np.asarray(stg1_outputs[0]).squeeze())
+    except Exception:
+        label = 0
+
+    try:
+        # If second output contains probabilities
         proba_array = np.asarray(stg1_outputs[1]).squeeze()
         if proba_array.ndim == 0:
-            # Scalar output
             crit_prob = float(proba_array)
         elif proba_array.size >= 2:
-            # [prob_class0, prob_class1] - we want class 1 (critical)
             crit_prob = float(proba_array[1])
         else:
             crit_prob = float(label)
     except Exception:
-        crit_prob = float(label)
-    
+        # Fallback: sometimes only a single probability output exists
+        try:
+            proba = np.asarray(stg1_outputs[0]).squeeze()
+            crit_prob = float(proba) if np.isfinite(proba) else float(label)
+        except Exception:
+            crit_prob = float(label)
+
     # BASE Model
-    base_rul = float(_base_model.run(None, {input_name: X})[0].squeeze())   # type: ignore
-    
+    try:
+        base_rul_raw = _base_model.run(None, {input_name_base: X})[0] # type: ignore
+        base_rul = float(np.asarray(base_rul_raw).squeeze())
+    except Exception:
+        base_rul = float('nan')
+
     # Stage-2A Regressor
-    stg2a_rul = float(_stage2a_regressor.run(None, {input_name: X})[0].squeeze())   # type: ignore
-    
+    try:
+        stg2a_raw = _stage2a_regressor.run(None, {input_name_stg2: X})[0] # type: ignore
+        stg2a_rul = float(np.asarray(stg2a_raw).squeeze())
+    except Exception:
+        stg2a_rul = float('nan')
+
     return crit_prob, base_rul, stg2a_rul
 
 
@@ -453,41 +657,48 @@ def predict(sensor_data) -> Dict[str, Any]:
                     'crit_prob': 0.0
                 }
     
-    # Decision Logic with Hysteresis 
-    # Training notebook thresholds:
-    #   THRESH_ENTER = 0.6 (enter critical)
-    #   THRESH_EXIT = 0.2 (exit critical)
-    #
-    # State machine:
-    #   SAFE state:
-    #    - Stay SAFE if crit_prob < THRESH_ENTER
-    #    - Switch to CRITICAL if crit_prob >= THRESH_ENTER
-    # CRITICAL state:
-    #   - Stay CRITICAL if crit_prob > THRESH_EXIT
-    #   - Switch to SAFE if crit_prob <= THRESH_EXIT
-    
+    # Decision Logic with Hysteresis
+    # 
+    # Stage-1 classifier determines if we're in critical region (RUL <= 100 min)
+    # If crit_prob >= THRESH_ENTER -> switch to Stage-2A for fine-grained RUL
+    # If crit_prob <= THRESH_EXIT -> switch back to BASE model
+
     if not _in_critical_state:
-        # Currently in SAFE state
+        # Currently in SAFE state - check if classifier indicates entering critical
         if crit_prob >= THRESH_ENTER:
             _in_critical_state = True
-            stage = "STAGE_2A"
-            final_rul = stg2a_rul
+            # Use Stage-2A only if its prediction is within the trained critical window
+            if np.isfinite(stg2a_rul) and stg2a_rul <= CRITICAL_MAX_RUL:
+                stage = "STAGE_2A"
+                final_rul = stg2a_rul
+            else:
+                # Keep critical state but fall back to BASE prediction for safety
+                stage = "BASE"
+                final_rul = base_rul
         else:
             stage = "BASE"
             final_rul = base_rul
     else:
-        # Currently in CRITICAL state
+        # Currently in CRITICAL state - stay unless classifier exits
         if crit_prob <= THRESH_EXIT:
             _in_critical_state = False
             stage = "BASE"
             final_rul = base_rul
         else:
-            stage = "STAGE_2A"
-            final_rul = stg2a_rul
-    
-    # Ensure RUL is non-negative
-    final_rul = max(0.0, final_rul)
-    
+            # Only accept Stage-2A if it's within its trained domain
+            if np.isfinite(stg2a_rul) and stg2a_rul <= CRITICAL_MAX_RUL:
+                stage = "STAGE_2A"
+                final_rul = stg2a_rul
+            else:
+                stage = "BASE"
+                final_rul = base_rul
+
+    # Ensure RUL is valid and clipped to reasonable production bounds
+    if not np.isfinite(final_rul):
+        final_rul = float(base_rul) if np.isfinite(base_rul) else 0.0
+
+    final_rul = float(np.clip(final_rul, 0.0, 48000.0))
+
     return {
                 'rul_min': float(final_rul),
                 'unit': 'min',

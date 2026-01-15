@@ -76,6 +76,12 @@ def load_models(models_dir: str = None): # type: ignore
     if not os.path.isdir(models_dir):
         raise FileNotFoundError(f"Model directory not found: {models_dir}")
 
+    # TEMP:DEBUG - model directory
+    try:
+        print(f"[TEMP:DEBUG] hydraulic_press handler loading models from: {models_dir}")
+    except Exception:
+        pass
+
     # configs
     base_cfg_path = os.path.join(models_dir, "hydraulic_press_base_model_config.json")
     stage1_cfg_path = os.path.join(models_dir, "hydraulic_press_stage1_config.json")
@@ -89,28 +95,51 @@ def load_models(models_dir: str = None): # type: ignore
             global_baseline.update(base_config.get("global_baseline", {}))
             # keep in module var
             globals()['base_config'] = base_config
+            try:
+                print(f"[TEMP:DEBUG] hydraulic_press base_config loaded: keys={list(base_config.keys())}")
+                # explicit helpful debug values
+                min_rul_h = base_config.get('min_rul_hours', None)
+                print(f"[TEMP:DEBUG] hydraulic_press base_config: min_rul_hours={min_rul_h}")
+            except Exception:
+                pass
 
     if os.path.exists(stage1_cfg_path):
         with open(stage1_cfg_path, "r") as f:
             stage1_config = json.load(f)
             globals()['stage1_config'] = stage1_config
+            try:
+                print(f"[TEMP:DEBUG] hydraulic_press stage1_config loaded: keys={list(stage1_config.keys())}")
+            except Exception:
+                pass
 
     # load stage2a config if present
     if os.path.exists(stage2a_cfg_path):
         with open(stage2a_cfg_path, "r") as f:
             stage2a_cfg = json.load(f)
             globals()['stage2a_config'] = stage2a_cfg
+            try:
+                print(f"[TEMP:DEBUG] hydraulic_press stage2a_config loaded: keys={list(stage2a_cfg.keys())}")
+            except Exception:
+                pass
 
     # load stage0 threshold file (contains prob_threshold)
     if os.path.exists(stage0_th_path):
         with open(stage0_th_path, "r") as f:
             s0 = json.load(f)
             globals()['stage0_threshold'] = s0
+            try:
+                print(f"[TEMP:DEBUG] hydraulic_press stage0_threshold loaded: keys={list(s0.keys())}")
+            except Exception:
+                pass
 
     if os.path.exists(sel_feat_path):
         with open(sel_feat_path, "r") as f:
             selected_features = json.load(f)
             globals()['selected_features'] = selected_features
+            try:
+                print(f"[TEMP:DEBUG] hydraulic_press selected_features loaded: count={len(selected_features)}")
+            except Exception:
+                pass
 
     # models
     def try_load(name):
@@ -166,17 +195,41 @@ def load_models(models_dir: str = None): # type: ignore
                         probs[np.arange(labels.shape[0]), labels] = 1.0
                         return probs
 
+                try:
+                    print(f"[TEMP:DEBUG] hydraulic_press try_load: ONNX model found and loaded: {onnx_path}")
+                except Exception:
+                    pass
                 return ONNXWrapper(sess, input_name, output_names)
-            except Exception:
+            except Exception as e:
+                try:
+                    print(f"[TEMP:DEBUG] hydraulic_press try_load: ONNX load failed for {onnx_path}: {e}")
+                except Exception:
+                    pass
                 # If ONNX import or session fails, continue to try pkl
                 pass
 
         # Fallback to joblib .pkl
         if os.path.exists(pkl_path):
             try:
-                return joblib.load(pkl_path)
-            except Exception:
+                m = joblib.load(pkl_path)
+                try:
+                    print(f"[TEMP:DEBUG] hydraulic_press try_load: PKL model loaded: {pkl_path}")
+                except Exception:
+                    pass
+                return m
+            except Exception as e:
+                try:
+                    print(f"[TEMP:DEBUG] hydraulic_press try_load: PKL load failed for {pkl_path}: {e}")
+                except Exception:
+                    pass
                 return None
+
+        try:
+            print(f"[TEMP:DEBUG] hydraulic_press try_load: No model files found for {name} (looked for {pkl_path} and {onnx_path})")
+        except Exception:
+            pass
+
+        return None
 
         return None
 
@@ -184,6 +237,17 @@ def load_models(models_dir: str = None): # type: ignore
     models["stage1"] = try_load("hydraulic_press_stage1_classifier.pkl")
     models["base"] = try_load("hydraulic_press_base_model.pkl")
     models["stage2a"] = try_load("hydraulic_press_stage2a_regressor.pkl")
+
+    # TEMP:DEBUG - summary of loaded models
+    try:
+        for k, v in models.items():
+            if v is None:
+                print(f"[TEMP:DEBUG] hydraulic_press model summary: {k} = None")
+            else:
+                tname = type(v).__name__
+                print(f"[TEMP:DEBUG] hydraulic_press model summary: {k} = {tname}")
+    except Exception:
+        pass
 
 
 # Helpers for arrays
@@ -219,56 +283,185 @@ def apply_feature_engineering(sensor_data: List[Dict[str, Any]]) -> Dict[str, fl
     """
     Return engineered features for last sample in sensor_data.
     Provides:
-      - normalized_degradation
-      - time_position (0..1)
-      - per-sensor last, mean, std, max, slope
+      - normalized_degradation, degradation_index
+      - time_position, time_progress (0..1)
+      - vibration_energy, vibration_cum_mean
+      - pressure_stability, force_pressure_coupling, current_pressure_ratio
+      - exp_degradation features
+      - per-sensor last, mean, std, max, slope, trend_slope
       - normalized last values for normalized sensors
+
+    Optimized for RPI: uses numpy vectorization, minimal allocations.
     """
     engineered = {}
     n = len(sensor_data)
     if n == 0:
         return engineered
 
-    # normalized sensors available in sensors_raw (must have been called)
-    # normalized_degradation: simple composite using available normalized sensors
+    last_sample = sensor_data[-1]
+    
+    # GLOBAL SENSOR RANGES for degradation_index (matches training)
+    GLOBAL_RANGES = {
+        'vibration': (0.2, 2.5),
+        'oil_temperature': (50.0, 95.0),
+        'hydraulic_pressure': (150.0, 250.0),
+        'oil_contamination': (1.0, 8.0),
+    }
+    
+    # Cache sensor arrays (RPI optimization: compute once)
+    _sensor_cache = {}
+    def get_arr(key):
+        if key not in _sensor_cache:
+            _sensor_cache[key] = _arr_from_sensor_data(sensor_data, key)
+        return _sensor_cache[key]
+    
+    # degradation_index (matches training: global fixed ranges)
+    def norm_global(key):
+        if key not in GLOBAL_RANGES:
+            return 0.0
+        arr = get_arr(key)
+        if arr.size == 0:
+            return 0.0
+        g_min, g_max = GLOBAL_RANGES[key]
+        val = float(arr[-1])
+        return max(0.0, min(1.0, (val - g_min) / (g_max - g_min + _eps)))
+    
+    vib_n = norm_global('vibration')
+    temp_n = norm_global('oil_temperature')
+    pres_n = norm_global('hydraulic_pressure')
+    cont_n = norm_global('oil_contamination')
+    engineered["degradation_index"] = (vib_n + temp_n + (1 - pres_n) + cont_n) / 4.0
+    
+    # normalized_degradation (existing baseline-based)
     pos_keys = ["vibration_norm", "oil_temperature_norm", "oil_contamination_norm", "motor_current_norm"]
     neg_keys = ["hydraulic_pressure_norm", "press_force_norm", "flow_rate_norm"]
     pos_sum = 0.0; pos_count = 0
     neg_sum = 0.0; neg_count = 0
     for k in pos_keys:
         if k in sensors_raw:
-            val = float(sensors_raw[k][-1])
-            pos_sum += val; pos_count += 1
+            pos_sum += float(sensors_raw[k][-1]); pos_count += 1
     for k in neg_keys:
         if k in sensors_raw:
-            val = -float(sensors_raw[k][-1])
-            neg_sum += val; neg_count += 1
-    denom = max(1, pos_count + neg_count)
-    engineered["normalized_degradation"] = (pos_sum + neg_sum) / denom
+            neg_sum += -float(sensors_raw[k][-1]); neg_count += 1
+    engineered["normalized_degradation"] = (pos_sum + neg_sum) / max(1, pos_count + neg_count)
 
-    # time_position: use elapsed_minutes/time if available otherwise index position
-    time_arr = _arr_from_sensor_data(sensor_data, "elapsed_minutes")
+    # time_position & time_progress
+    time_arr = get_arr("elapsed_minutes")
     if not np.all(np.isnan(time_arr)):
-        tmin = float(np.nanmin(time_arr))
-        tmax = float(np.nanmax(time_arr))
-        last = float(time_arr[-1])
-        engineered["time_position"] = (last - tmin) / ( (tmax - tmin) + _eps )
+        tmin, tmax, tlast = float(np.nanmin(time_arr)), float(np.nanmax(time_arr)), float(time_arr[-1])
+        engineered["time_position"] = (tlast - tmin) / (tmax - tmin + _eps)
+        engineered["time_progress"] = float(n) / max(1, n)  # cumulative position approximation
     else:
         engineered["time_position"] = float((n - 1) / max(1, n - 1))
-
+        engineered["time_progress"] = float(n) / max(1, n)
+    
+    # vibration_energy: rolling_mean(5) ** 2
+    vib_arr = get_arr('vibration')
+    if vib_arr.size >= 5:
+        vib_roll_mean = float(np.nanmean(vib_arr[-5:]))
+        engineered["vibration_energy"] = vib_roll_mean ** 2
+    elif vib_arr.size > 0:
+        engineered["vibration_energy"] = float(vib_arr[-1]) ** 2
+    else:
+        engineered["vibration_energy"] = 0.0
+    
+    # vibration_cum_mean: cumulative mean
+    if vib_arr.size > 0:
+        engineered["vibration_cum_mean"] = float(np.nanmean(vib_arr))
+    else:
+        engineered["vibration_cum_mean"] = 0.0
+    
+    # pressure_stability: log1p(1 / std_20)
+    hp_arr = get_arr('hydraulic_pressure')
+    if hp_arr.size >= 20:
+        hp_std = float(np.nanstd(hp_arr[-20:]))
+        engineered["pressure_stability"] = float(np.log1p(1.0 / max(1e-4, hp_std)))
+    elif hp_arr.size > 0:
+        hp_std = float(np.nanstd(hp_arr))
+        engineered["pressure_stability"] = float(np.log1p(1.0 / max(1e-4, hp_std + 0.1)))
+    else:
+        engineered["pressure_stability"] = 0.0
+    
+    # force_pressure_coupling: press_force / hydraulic_pressure
+    pf_arr = get_arr('press_force')
+    if pf_arr.size > 0 and hp_arr.size > 0:
+        pf_last = float(pf_arr[-1])
+        hp_last = float(hp_arr[-1])
+        engineered["force_pressure_coupling"] = min(10.0, max(0.0, pf_last / (hp_last + _eps)))
+    else:
+        engineered["force_pressure_coupling"] = 1.0
+    
+    # current_pressure_ratio: motor_current / hydraulic_pressure
+    mc_arr = get_arr('motor_current')
+    if mc_arr.size > 0 and hp_arr.size > 0:
+        mc_last = float(mc_arr[-1])
+        hp_last = float(hp_arr[-1])
+        engineered["current_pressure_ratio"] = mc_last / max(1.0, hp_last)
+    else:
+        engineered["current_pressure_ratio"] = 0.0
+    
+    # exp_degradation features (expanding window)
+    degradation_sensors = ['vibration', 'oil_temperature', 'oil_contamination', 'motor_current']
+    exp_vals = []
+    for s in degradation_sensors:
+        arr = get_arr(s)
+        if arr.size > 0:
+            arr_min = float(np.nanmin(arr))
+            arr_max = float(np.nanmax(arr))
+            arr_last = float(arr[-1])
+            rng = max(1e-6, arr_max - arr_min)
+            exp_val = max(0.0, min(1.0, (arr_last - arr_min) / rng))
+            engineered[f"{s}_exp_degradation"] = exp_val
+            exp_vals.append(exp_val)
+        else:
+            engineered[f"{s}_exp_degradation"] = 0.0
+    
+    # exp_degradation_combined
+    engineered["exp_degradation_combined"] = sum(exp_vals) / max(1, len(exp_vals)) if exp_vals else 0.0
+    
+    # trend_slope features (long window slope)
+    trend_sensors = ['vibration', 'oil_temperature', 'motor_current']
+    for s in trend_sensors:
+        arr = get_arr(s)
+        if arr.size >= 20:
+            # slope over long window (diff of rolling means)
+            early_mean = float(np.nanmean(arr[:20]))
+            late_mean = float(np.nanmean(arr[-20:]))
+            engineered[f"{s}_trend_slope"] = (late_mean - early_mean) / max(1, arr.size - 20)
+        elif arr.size >= 2:
+            engineered[f"{s}_trend_slope"] = float((arr[-1] - arr[0]) / (arr.size - 1))
+        else:
+            engineered[f"{s}_trend_slope"] = 0.0
+    
+    # pct_rank features
+    for s in ['vibration', 'oil_temperature']:
+        arr = get_arr(s)
+        if arr.size > 0:
+            lastv = float(arr[-1])
+            mx = float(np.nanmax(arr))
+            engineered[f"{s}_pct_rank"] = lastv / (mx + _eps) if mx > _eps else 0.0
+        else:
+            engineered[f"{s}_pct_rank"] = 0.0
+    
     # per-sensor stats (discover sensors from last sample)
-    last_sample = sensor_data[-1]
     exclude_keys = {"cycle", "elapsed_hours", "elapsed_minutes", "cycle_id", "time_min", "total_rul", "current_rul", "timestamp"}
     sensor_keys = [k for k in last_sample.keys() if k not in exclude_keys]
     for s in sensor_keys:
-        arr = _arr_from_sensor_data(sensor_data, s)
-        engineered[f"{s}_last"] = float(arr[-1]) if arr.size > 0 and not np.isnan(arr[-1]) else 0.0
-        engineered[f"{s}_mean_win"] = float(np.nanmean(arr)) if arr.size > 0 else 0.0
-        engineered[f"{s}_std_win"] = float(np.nanstd(arr)) if arr.size > 0 else 0.0
-        engineered[f"{s}_max_win"] = float(np.nanmax(arr)) if arr.size > 0 else 0.0
-        if arr.size >= 2 and not np.isnan(arr[0]) and not np.isnan(arr[-1]):
-            engineered[f"{s}_slope_win"] = float((arr[-1] - arr[0]) / (arr.size - 1))
+        arr = get_arr(s)
+        if arr.size > 0:
+            engineered[f"{s}_last"] = float(arr[-1]) if not np.isnan(arr[-1]) else 0.0
+            engineered[f"{s}_mean_win"] = float(np.nanmean(arr))
+            engineered[f"{s}_std_win"] = float(np.nanstd(arr))
+            engineered[f"{s}_max_win"] = float(np.nanmax(arr))
+            if arr.size >= 2 and not np.isnan(arr[0]) and not np.isnan(arr[-1]):
+                engineered[f"{s}_slope_win"] = float((arr[-1] - arr[0]) / (arr.size - 1))
+            else:
+                engineered[f"{s}_slope_win"] = 0.0
         else:
+            engineered[f"{s}_last"] = 0.0
+            engineered[f"{s}_mean_win"] = 0.0
+            engineered[f"{s}_std_win"] = 0.0
+            engineered[f"{s}_max_win"] = 0.0
             engineered[f"{s}_slope_win"] = 0.0
 
     # normalized last vals
@@ -410,10 +603,38 @@ def predict(sensor_data: List[Dict[str, Any]]):
     if models.get("stage0") is not None:
         try:
             probs = models["stage0"].predict_proba(X_clf)
-            stage0_prob = float(probs[:, 1].ravel()[0])
-            # threshold can be in base_config or use default 0.7
-            thresh = float(base_config.get("stage0_threshold", 0.7)) if base_config else 0.7
+            # TEMP:DEBUG - print raw probs to verify class ordering
+            try:
+                print(f"[TEMP:DEBUG] stage0 raw_probs={probs}")
+            except Exception:
+                pass
+            # By convention we previously used column 1 as "prob of critical/near-term" —
+            # but ONNX models may order classes differently. Extract both safely.
+            try:
+                # If probs is 2D with 2 columns, take column 1 as originally used
+                if isinstance(probs, (list, tuple)):
+                    probs_arr = np.asarray(probs)
+                else:
+                    probs_arr = probs
+                if hasattr(probs_arr, 'ndim') and probs_arr.ndim == 2 and probs_arr.shape[1] >= 2:
+                    stage0_prob = float(probs_arr[:, 1].ravel()[0])
+                else:
+                    # fallback: use first value
+                    stage0_prob = float(np.asarray(probs).ravel()[0])
+            except Exception:
+                stage0_prob = float(np.asarray(probs).ravel()[0])
+
+            # Use stage0_threshold 'prob_threshold' if available, else default 0.5
+            try:
+                thresh = float(stage0_threshold.get('prob_threshold', 0.5)) if stage0_threshold else 0.5
+            except Exception:
+                thresh = 0.5
+
             stage0_pred = int(stage0_prob >= thresh)
+            try:
+                print(f"[TEMP:DEBUG] stage0: prob_col_used={stage0_prob}, thresh={thresh}, stage0_pred={stage0_pred}")
+            except Exception:
+                pass
         except Exception:
             try:
                 p = int(models["stage0"].predict(X_clf).ravel()[0])
@@ -424,17 +645,31 @@ def predict(sensor_data: List[Dict[str, Any]]):
         # default assume NEAR_TERM to exercise short-term pipeline
         stage0_pred = 1; stage0_prob = 1.0
 
-    # Stage-0 threshold 
-    thresh = 0.7
+    # TEMP:DEBUG - stage0 decision and input shape
+    try:
+        thresh_dbg = float(base_config.get("stage0_threshold", 0.7)) if base_config else 0.7
+    except Exception:
+        thresh_dbg = 0.7
+    print(f"[TEMP:DEBUG] stage0: pred={stage0_pred}, prob={stage0_prob}, thresh={thresh_dbg}, X_clf_shape={X_clf.shape}")
 
+    # Interpret stage0_pred: empirical mapping indicates stage0_pred==1 corresponds to LONG_TERM
     # LONG_TERM -> Base model
-    if stage0_pred == 0:
+    if stage0_pred == 1:
         if models.get("base") is None:
             raise RuntimeError("Base model not loaded")
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
+
+        # TEMP:DEBUG - log base model raw and converted values
+        try:
+            print(f"[TEMP:DEBUG] LONG_TERM base (interpreting stage0_pred==1 as LONG_TERM): base_log={base_log}, base_hr(expm1)={base_hr}, base_min_before_clamp={base_hr*60.0}, X_base_shape={X_base.shape}")
+        except Exception:
+            pass
+
         base_min = _clamp_rul_minutes("base", base_min)
+        print(f"[TEMP:DEBUG] LONG_TERM base: base_min_after_clamp={base_min}")
+
         return {
                     "rul_min": float(base_min),
                     "regime": "LONG_TERM",
@@ -467,7 +702,16 @@ def predict(sensor_data: List[Dict[str, Any]]):
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
+
+        # TEMP:DEBUG - log base model raw and converted values
+        try:
+            print(f"[TEMP:DEBUG] NEAR_TERM base: base_log={base_log}, base_hr(expm1)={base_hr}, base_min_before_clamp={base_hr*60.0}, X_base_shape={X_base.shape}")
+        except Exception:
+            pass
+
         base_min = _clamp_rul_minutes("base", base_min)
+        print(f"[TEMP:DEBUG] NEAR_TERM base: base_min_after_clamp={base_min}")
+
         return {
                     "rul_min": float(base_min),
                     "regime": "NEAR_TERM",
@@ -484,7 +728,16 @@ def predict(sensor_data: List[Dict[str, Any]]):
         base_log = float(models["base"].predict(X_base).ravel()[0])
         base_hr = float(np.expm1(base_log))
         base_min = base_hr * 60.0
+
+        # TEMP:DEBUG - CRITICAL fallback values
+        try:
+            print(f"[TEMP:DEBUG] CRITICAL fallback base: base_log={base_log}, base_hr(expm1)={base_hr}, base_min_before_clamp={base_hr*60.0}, X_base_shape={X_base.shape}")
+        except Exception:
+            pass
+
         base_min = _clamp_rul_minutes("base", base_min)
+        print(f"[TEMP:DEBUG] CRITICAL fallback base: base_min_after_clamp={base_min}")
+
         return {
                 "rul_min": float(base_min),
                 "regime": "CRITICAL",
@@ -496,8 +749,17 @@ def predict(sensor_data: List[Dict[str, Any]]):
     try:
         pred_log = float(models["stage2a"].predict(X_clf).ravel()[0])
         pred_min = float(np.expm1(pred_log))
+
+        # TEMP:DEBUG - Stage2A raw and converted values
+        try:
+            print(f"[TEMP:DEBUG] STAGE2A: pred_log={pred_log}, pred_min_before_clamp={pred_min}, X_clf_shape={X_clf.shape}")
+        except Exception:
+            pass
+
         # clamp according to config (min from base_config and max from stage2a_config)
         pred_min = _clamp_rul_minutes("stage2a", pred_min)
+        print(f"[TEMP:DEBUG] STAGE2A: pred_min_after_clamp={pred_min}")
+
         return {
                     "rul_min": pred_min,
                     "regime": "CRITICAL",
@@ -506,6 +768,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
                     "stage1_prob": stage1_prob
                 }
     except Exception as e:
+        print(f"[TEMP:DEBUG] STAGE2A failed: {e}")
         return {
                     "rul_min": 0.0,
                     "regime": "CRITICAL",
@@ -519,22 +782,16 @@ def _clamp_rul_minutes(model: str, val_min: float) -> float:
     global base_config, stage2a_config
     v = float(val_min)
 
-    # minimum: base_config['min_rul_hours'] -> minutes
-    if model == "base" and base_config and "min_rul_hours" in base_config:
-        try:
-            min_hours = float(base_config["min_rul_hours"])
-            v = max(v, min_hours * 60.0)
-        except Exception:
-            pass
+    # NOTE: Do NOT apply an artificial minimum clamp from base_config['min_rul_hours'].
+    # The Base model must be able to predict the full RUL range without being forced to a floor.
 
-    # maximum: prefer stage2a_config['max_rul_min']
+    # maximum: prefer stage2a_config['max_rul_min'] for Stage-2A only
     max_min = None
     if model == "stage2a" and stage2a_config and "max_rul_min" in stage2a_config:
         try:
             max_min = float(stage2a_config["max_rul_min"])
         except Exception:
             max_min = None
-
 
     if max_min is not None:
         v = min(v, max_min)

@@ -54,12 +54,12 @@ class Predictor_Node(Node):
 
         # Process Pump variables
         self.pump_history = []                      # for all the cycles
-        self.pump_rolling_window = 5                # minimum samples for rolling calculations (matches WINDOW_SHORT)
+        self.pump_rolling_window = 20                # minimum samples for rolling calculations (matches WINDOW_LONG)
         self.predicted_rul_process_pump = None
 
         # Hydraulic Press variables
         self.hydraulic_press_history = []
-        self.hydraulic_press_rolling_window = 5
+        self.hydraulic_press_rolling_window = 20
         self.predicted_rul_hydraulic_press = None
 
         # Load models and features into memory
@@ -78,6 +78,8 @@ class Predictor_Node(Node):
     def listener_process_pump_callback(self, msg: String):
         """
         Callback function for Process_Pump subscription.
+        Waits till enough history is collected (5 for rolling/mean calculations No _20 feature in saved in training), then calls the prediction handler.
+        Resets history on cycle==0 (at new run/after maintenance).
         """
         try: 
             received_data = json.loads(msg.data)
@@ -130,6 +132,8 @@ class Predictor_Node(Node):
     def listener_hydraulic_press_callback(self, msg: String):
         """
         Callback function for Hydraulic_Press subscription.
+        Waits till enough history is collected (20 for rolling/mean calculations), then calls the prediction handler.
+        Resets history on cycle==0 (at new run/after maintenance).
         """
         try: 
             received_data = json.loads(msg.data)
@@ -188,7 +192,7 @@ class Predictor_Node(Node):
         """
         Generic publisher for RUL predictions.
         Selects the correct publisher based on machine type.
-        
+        Machine specific logging due to different payload structures.
         """
         if machine is not None and prediction_payload is not None and cycle is not None:
 
@@ -199,12 +203,23 @@ class Predictor_Node(Node):
                                                 "rul": prediction_payload
                                             })
             self.prediction_publishers[machine].publish(prediction_msg)
-            self.get_logger().info(
-                                        f"Published RUL prediction for {machine} at cycle {cycle}: "
-                                        f"RUL={prediction_payload.get('rul_min', 'N/A'):.2f} min, "
-                                        f"stage={prediction_payload.get('stage', 'N/A')}, "
-                                        f"crit_prob={float(prediction_payload.get('crit_prob', 0.0)):.3f}"
-                                    )
+
+            if machine == "hydraulic_press":
+                self.get_logger().info(
+                                            f"Published RUL prediction for {machine} at cycle {cycle}: "
+                                            f"RUL={prediction_payload.get('rul_min', 'N/A'):.2f} min, "
+                                            f"Active Model={prediction_payload.get('active_model', 'N/A')}, "
+                                            f"Stage_0_Prob={prediction_payload.get('stage0_prob', 'N/A')}, "
+                                            f"Stage_1_Prob={prediction_payload.get('stage1_prob', 'N/A')}, "
+                                        )
+
+            elif machine == "process_pump":
+                self.get_logger().info(
+                                            f"Published RUL prediction for {machine} at cycle {cycle}: "
+                                            f"RUL={prediction_payload.get('rul_min', 'N/A'):.2f} min, "
+                                            f"stage={prediction_payload.get('stage', 'N/A')}, "
+                                            f"crit_prob={float(prediction_payload.get('crit_prob', 0.0)):.3f}"
+                                        )
 
 def main(args=None):
     """

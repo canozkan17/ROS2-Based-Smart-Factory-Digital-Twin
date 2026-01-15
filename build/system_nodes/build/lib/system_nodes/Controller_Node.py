@@ -65,7 +65,7 @@ class Controller_Node(Node):
         self.hydraulic_press_total_cycles = 0
         self.hydraulic_press_current_cycle = 0
         self.hydraulic_press_last_received_rul = 0
-        self.hydraulic_press_CRITICAL = 600
+        self.hydraulic_press_CRITICAL = 300 # stage2A best performance is below 300 
         self.hydraulic_press_WARNING  = 1500
         self.hydraulic_press_SAFE_BUFFER = 100
         
@@ -88,12 +88,19 @@ class Controller_Node(Node):
                 cycle = prediction.get('cycle')
                 rul_payload = prediction.get('rul')
 
+                # Accept both dict payloads and bare numeric rul values
+                rul_min = None
+                rul_unit = ''
                 if isinstance(rul_payload, dict):
                     rul_min = rul_payload.get('rul_min')
                     rul_unit = (rul_payload.get('unit') or '').lower()
-                else:
-                    rul_min = None
-                    rul_unit = ''
+                elif isinstance(rul_payload, (int, float, str)):
+                    try:
+                        rul_min = float(rul_payload)
+                        rul_unit = 'min'
+                    except Exception:
+                        rul_min = None
+                        rul_unit = ''
 
                 if rul_min is None or cycle is None:
                     self.get_logger().warning("Incomplete prediction payload")
@@ -143,12 +150,19 @@ class Controller_Node(Node):
                 cycle = prediction.get('cycle')
                 rul_payload = prediction.get('rul')
 
+                # Accept both dict payloads and bare numeric rul values
+                rul_min = None
+                rul_unit = ''
                 if isinstance(rul_payload, dict):
                     rul_min = rul_payload.get('rul_min')
                     rul_unit = (rul_payload.get('unit') or '').lower()
-                else:
-                    rul_min = None
-                    rul_unit = ''
+                elif isinstance(rul_payload, (int, float, str)):
+                    try:
+                        rul_min = float(rul_payload)
+                        rul_unit = 'min'
+                    except Exception:
+                        rul_min = None
+                        rul_unit = ''
 
                 if rul_min is None or cycle is None:
                     self.get_logger().warning("Incomplete prediction payload")
@@ -237,14 +251,14 @@ class Controller_Node(Node):
             return
 
         remaining_min = max(0, total_cycle - cycle)
-        current_state = self.machine_status.get(machine, 1)
+        current_state = self.machine_status.get(machine, 1) # type: ignore
         
         # Debug log for decision inputs
         self.get_logger().info(
-            f"[TEMP:DEBUG] CONTROL_DECISION: machine={machine}, cycle={cycle}, rul={rul}, "
-            f"prev_rul={prev_rul}, remaining_min={remaining_min}, current_state={current_state}, "
-            f"CRITICAL={critical}, WARNING={warning}"
-        )
+                                f"[TEMP:DEBUG] CONTROL_DECISION: machine={machine}, cycle={cycle}, rul={rul}, "
+                                f"prev_rul={prev_rul}, remaining_min={remaining_min}, current_state={current_state}, "
+                                f"CRITICAL={critical}, WARNING={warning}"
+                            )
 
         # sudden *increases* as likely glitches; sudden drops can be real (worse health)
         # and should not be ignored.
@@ -252,9 +266,12 @@ class Controller_Node(Node):
             self.get_logger().warning("RUL spike detected (upward), ignoring")
             return
 
+        reason = None
+
         # HARD CRITICAL ZONE
         if rul <= critical:
             command = "SHUTDOWN"
+            reason = "local_rul<=critical"
             self.get_logger().info(f"[TEMP:DEBUG] DECISION: SHUTDOWN (rul={rul} <= CRITICAL={critical})")
 
         # WARNING ZONE
@@ -264,18 +281,21 @@ class Controller_Node(Node):
 
             if rul >= required_time: # job can be finished
                 command = "SLOW_DOWN"
+                reason = "rul>=required_time_slowdown"
                 self.get_logger().info(f"[TEMP:DEBUG] DECISION: SLOW_DOWN (rul={rul} >= required_time={required_time})")
             else:                       # job cant be finished
                 command = "SHUTDOWN"
+                reason = "rul<required_time_shutdown"
                 self.get_logger().info(f"[TEMP:DEBUG] DECISION: SHUTDOWN (rul={rul} < required_time={required_time})")
 
         # SAFE ZONE
         else:
             command = "NORMAL_OPERATION"
+            reason = "rul_safe"
 
-        self.publish_control_CMD(rul, cycle, command, machine)
+        self.publish_control_CMD(rul, cycle, command, machine, reason=reason)
 
-    def publish_control_CMD(self, rul:float, cycle:int, command:str, machine=None):
+    def publish_control_CMD(self, rul:float, cycle:int, command:str, machine=None, reason: str = None): # type: ignore
         """
         Controls if the machine command has been changed from Normal_Operation to another state.
         Publish control command message to the appropriate topic.
@@ -290,9 +310,9 @@ class Controller_Node(Node):
 
         # Debug log for state transition check
         self.get_logger().info(
-            f"[TEMP:DEBUG] STATE_CHECK: machine={machine}, current_state={current_state}, "
-            f"new_state={new_state}, command={command}"
-        )
+                                    f"[TEMP:DEBUG] STATE_CHECK: machine={machine}, current_state={current_state}, "
+                                    f"new_state={new_state}, command={command}"
+                                )
 
         # Check if the state is escalating or not
         # Only publish if the machine state is escalating
@@ -302,9 +322,9 @@ class Controller_Node(Node):
             recovery_time_min, remaining_min = self.compute_maintenance_schedule(machine)
 
             self.get_logger().info(
-                f"[TEMP:DEBUG] STATE_ESCALATION: {machine} state {current_state} -> {new_state}, "
-                f"recovery_time_min={recovery_time_min}, remaining_min={remaining_min}"
-            )
+                                        f"[TEMP:DEBUG] STATE_ESCALATION: {machine} state {current_state} -> {new_state}, "
+                                        f"recovery_time_min={recovery_time_min}, remaining_min={remaining_min}"
+                                    )
 
             control_msg = String()
             control_msg.data = json.dumps({
@@ -312,11 +332,12 @@ class Controller_Node(Node):
                                             "cycle": cycle,
                                             "rul": rul,
                                             "command": command,
-                                            "recovery_time_min": recovery_time_min
+                                            "recovery_time_min": recovery_time_min,
+                                            "reason": reason
                                         })
             self.control_cmd_publishers[machine].publish(control_msg)                       # informs the machine
             self.publish_maintenance_schedule(machine, recovery_time_min, remaining_min)    # informs the job scheduler
-            self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}")
+            self.get_logger().info(f"Published Control Command for {machine} at cycle {cycle}: RUL={rul}, Command={command}, Reason={reason}")
             # trigger the maintenance scheduling
 
     def compute_maintenance_schedule(self, machine=None):

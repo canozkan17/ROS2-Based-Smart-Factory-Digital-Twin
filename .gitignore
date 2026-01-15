@@ -28,9 +28,10 @@ synthetic_hydraulic_press_data_long_life.parquet
 synthetic_hydraulic_press_data_short_life.parquet
 filtered_analysis.txt
 sensor_lifecycle_lookup.json
-hydraulic_press_stage0_threshold.json
 .ros_launch_pid
 start_system.sh
 StartSystem.bat
 streamlit_gui.py
 system_nodes_launcher.desktop
+.tools/log_analysis/
+parse_rul_log.py

@@ -1,0 +1,13 @@
+{
+  "BEST_PARAMS": {
+    "subsample": 0.8,
+    "n_estimators": 600,
+    "min_child_weight": 1,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "colsample_bytree": 1.0
+  },
+  "BEST_WEIGHT": null,
+  "THRESH_ENTER": 0.95,
+  "THRESH_EXIT": 0.2
+}

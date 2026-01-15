@@ -151,10 +151,11 @@ class Machine_Process_Pump_Sensor_Node(Node):
 
         # Extract control command and recovery time from the message
         command = control_msg.get("command", "NORMAL_OPERATION")
+        machine = control_msg.get("machine", "process_pump")
         self.maintenance_cycles_remaining = control_msg.get("recovery_time_min", 0)
 
         if command == "SHUTDOWN":
-            self.get_logger().info(f"Received SHUTDOWN command. Stopping current task.")
+            self.get_logger().info(f"Received SHUTDOWN command for machine {machine}. Stopping current task.")
             self.control_cmd = "SHUTDOWN"
             self.in_maintenance = True
             if self.production_timer:
@@ -163,12 +164,12 @@ class Machine_Process_Pump_Sensor_Node(Node):
 
         elif command == "SLOW_DOWN":
             self.control_cmd = "SLOW_DOWN"
-            self.get_logger().info(f"Received SLOW_DOWN command. Slowing down operation.")
+            self.get_logger().info(f"Received SLOW_DOWN command for machine {machine}. Slowing down operation.")
             self.degredation_factor *= 0.9  # slowing down degradation by 10%
         
         
         elif command == "NORMAL_OPERATION":
-            self.get_logger().info(f"Received NORMAL_OPERATION command. Continuing operation.")
+            self.get_logger().info(f"Received NORMAL_OPERATION command for machine {machine}. Continuing operation.")
         else:
             self.get_logger().warning(f"Unknown command received: {command}")
 

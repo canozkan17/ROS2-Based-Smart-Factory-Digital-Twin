@@ -1,0 +1,13 @@
+[
+    "vibration_energy",
+    "vibration",
+    "temp_motor",
+    "pressure",
+    "vibration_roll_std_20",
+    "vib_motor",
+    "vib_motor_roll_std_20",
+    "temp_motor_roll_std_20",
+    "pressure_stability",
+    "motor_pump_coupling",
+    "pressure_roll_std_20"
+]
