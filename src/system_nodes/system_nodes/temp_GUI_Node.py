@@ -342,6 +342,7 @@ class temp_GUI_Node(Node):
 
         if self.target_job is not None:
             user_input_msg.data = json.dumps(self.target_job, indent=4)
+            self.target_job["mode"] = "FAST"
             self.publisher_user_input.publish(user_input_msg)
         else:
             msg = String()

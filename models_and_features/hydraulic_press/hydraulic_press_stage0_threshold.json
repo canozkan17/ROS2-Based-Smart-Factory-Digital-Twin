@@ -1,5 +1,5 @@
 {
     "threshold_min": 5000,
     "threshold_hours": 83.33333333333333,
-    "prob_threshold": 0.5
+    "prob_threshold": 0.7
 }

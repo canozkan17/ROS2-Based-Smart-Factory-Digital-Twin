@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System Nodes Launcher
+Comment=Start ROS2 system nodes and temp GUI in separate terminals
+Exec=/home/canozkan/Capstone_Project/start_system.sh
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;Utility;

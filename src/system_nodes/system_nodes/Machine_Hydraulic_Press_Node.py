@@ -34,6 +34,8 @@ class Machine_Hydraulic_Press_Node(Node):
         self.publisher_completed = self.create_publisher(String, "Completed/hydraulic_press", 10)
         # Publisher for maintenance feedback 
         self.publisher_maintenance_feedback = self.create_publisher(String, "Maintenance_Feedback/hydraulic_press", 10)
+        # Publisher for Production Log (ground-truth RUL)
+        self.publisher_production_log = self.create_publisher(String, "Production_Log", 10)
             
         
         # Variable set-up
@@ -42,7 +44,8 @@ class Machine_Hydraulic_Press_Node(Node):
 
         # Simulation and production control flags
         # Set "REALTIME" for 60s per cycle, "FAST" for max speed
-        self.simulation_mode = "FAST"      # or "REALTIME" TODO: Make this configurable in gui later  
+        self.simulation_mode = "FAST" # default FAST, user decides in gui
+        self.simulation_mode_lock = False
         self.production_timer = None       # Holds the rclpy.Timer object
         self.cycles_to_run = 0
         self.cycles_done = 0
@@ -115,6 +118,27 @@ class Machine_Hydraulic_Press_Node(Node):
         self.get_logger().info(f"Machine lifecycle: max lifetime = {self.max_lifetime:.1f} hours ({self.total_lifetime_minutes} min)")
         self.get_logger().info("Listening on 'Job_Orders' topic.")
         self.get_logger().info("Listening on 'Control_CMD' topic.")
+        # Publisher for Node status
+        self.publisher_node_status = self.create_publisher(String, "Node_Status", 10)
+        self._node_status = 'READY'
+        try:
+            self.node_status_timer = self.create_timer(2.0, self._publish_node_status)
+        except Exception:
+            self.node_status_timer = None
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
+
+    def _publish_node_status(self):
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
 
 
     def listener_job_orders_callback(self, msg: String):
@@ -140,7 +164,11 @@ class Machine_Hydraulic_Press_Node(Node):
                                                 f"\nReceived task: '{json.dumps(task['job_ID'], indent=2)}'. "
                                                 f"Calculated cycles: {self.cycles_to_run}"
                                             )
-
+                    # check if the mode has been entered - first time we accept mode, later we lock it
+                    if not self.simulation_mode_lock:
+                        self.simulation_mode = task.get("mode", "FAST")  # default to FAST if not specified
+                        self.simulation_mode_lock = True
+                        self.get_logger().info(f"Simulation mode set to: {self.simulation_mode}")
                     # Start production loop based on simulation mode
                     if self.simulation_mode == "REALTIME":
                         self.get_logger().info(f"Starting REALTIME simulation ({self.cycles_to_run} cycles)...")
@@ -274,35 +302,23 @@ class Machine_Hydraulic_Press_Node(Node):
         # Noise multiplier (heteroscedastic)
         noise_multiplier = 1.0 + degradation_factor
 
-        # Physical limits for realistic sensor values
-        max_oil_temperature = 120.0
-        min_hydraulic_pressure = 50.0
-        max_oil_contamination = 50.0
-        max_vibration = 15.0
-        min_press_force = 20.0
-        min_flow_rate = 20.0
-        max_motor_current = 100.0
-
         hydraulic_pressure = (
                                 self.base_pressure
                                 - self.pressure_drop_rate * t * near_term_factor * critical_boost
                                 + rng.normal(0.0, self.pressure_noise) * noise_multiplier
                             )
-        hydraulic_pressure = max(hydraulic_pressure, min_hydraulic_pressure)
 
         oil_temperature = (
                             self.base_oil_temp
                             + self.oil_temp_rate * t * near_term_factor * critical_boost
                             + rng.normal(0.0, self.oil_temp_noise) * (1.0 + 0.5 * degradation_factor)
                         )
-        oil_temperature = min(oil_temperature, max_oil_temperature)
 
         oil_contamination = (
                                 self.base_contamination
                                 + self.contamination_growth * t * near_term_factor * critical_boost
                                 + rng.normal(0.0, self.contamination_noise) * noise_multiplier
                             )
-        oil_contamination = min(oil_contamination, max_oil_contamination)
 
         ram_position_deviation = (
                                     self.base_ram_dev
@@ -315,7 +331,6 @@ class Machine_Hydraulic_Press_Node(Node):
                             - self.force_loss_rate * t * near_term_factor * critical_boost
                             + rng.normal(0.0, self.force_noise) * (1.0 + 0.3 * degradation_factor)
                         )
-        press_force = max(press_force, min_press_force)
 
         vibration_profile = (self.failure_vibration - self.base_vibration) * (
                                                                                 0.1 * fraction +
@@ -327,21 +342,18 @@ class Machine_Hydraulic_Press_Node(Node):
                         + vibration_profile
                         + rng.normal(0.0, self.vibration_noise) * noise_multiplier
                     )
-        vibration = min(vibration, max_vibration)
 
         flow_rate = (
                         self.base_flow
                         - self.flow_loss_rate * t * near_term_factor * critical_boost
                         + rng.normal(0.0, self.flow_noise) * noise_multiplier
                     )
-        flow_rate = max(flow_rate, min_flow_rate)
 
         motor_current = (
                             self.base_current
                             + self.current_growth_rate * t * near_term_factor * critical_boost
                             + rng.normal(0.0, self.current_noise) * (1.0 + 0.5 * degradation_factor)
                         )
-        motor_current = min(motor_current, max_motor_current)
 
         cycle_output = {
                             "hydraulic_pressure": float(hydraulic_pressure),
@@ -444,6 +456,8 @@ class Machine_Hydraulic_Press_Node(Node):
 
                 self.publish_generated_data()
                 self.cycles_done += 1
+                # Small delay to avoid overwhelming subscribers in FAST mode
+                time.sleep(0.02)
             
             if self.in_maintenance:
                 self.maintenance_timer()
@@ -497,6 +511,16 @@ class Machine_Hydraulic_Press_Node(Node):
         msg = String()
         msg.data = json.dumps(sensor_data)
         self.publisher_sensors.publish(msg)
+
+        # Publish ground-truth RUL to Production_Log
+        prod_msg = String()
+        prod_msg.data = json.dumps({
+                                    "machine": "hydraulic_press",
+                                    "cycle": cycle,
+                                    "current_rul_min": current_rul_min,
+                                    "total_lifetime_minutes": self.total_lifetime_minutes
+                                })
+        self.publisher_production_log.publish(prod_msg)
             
         self.get_logger().info(
                                 f"Published sensor data for cycle: {cycle} (in minutes) "

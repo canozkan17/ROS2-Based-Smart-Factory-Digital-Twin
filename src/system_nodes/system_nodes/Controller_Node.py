@@ -43,6 +43,13 @@ class Controller_Node(Node):
                                     }
         # Publisher for maintenance queue
         self.maintenance_publisher = self.create_publisher(String, "Maintenance_Queue", 10)
+        # Publisher for node status
+        self.publisher_node_status = self.create_publisher(String, "Node_Status", 10)
+        self._node_status = 'READY'
+        try:
+            self.node_status_timer = self.create_timer(2.0, self._publish_node_status)
+        except Exception:
+            self.node_status_timer = None
 
         # Machine Status Control
             # NORMAL_OPERATION: 1 - default state
@@ -72,6 +79,20 @@ class Controller_Node(Node):
         # Set-up logs
         self.get_logger().info("Controller node ready!")
         self.get_logger().info("Listening on 'Predictions/ ' topic. For 2 machine sensors")
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
+
+    def _publish_node_status(self):
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
         
     # PROCESS PUMP MACHINE METHOD
     def listener_process_pump_predictions_callback(self, msg: String):

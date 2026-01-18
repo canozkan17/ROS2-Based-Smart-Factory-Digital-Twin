@@ -53,7 +53,14 @@ class Job_Scheduler_Node(Node):
         self.publisher_job_orders = self.create_publisher(String, "Job_Orders", 10)
         # Publisher for Production Log status
         self.publisher_production_log = self.create_publisher(String, "Production_Log", 10)
-        
+        # Publisher for Node status (for GUI)
+        self.publisher_node_status = self.create_publisher(String, "Node_Status", 10)
+        self._node_status = 'READY'
+        # Timer to periodically broadcast node status so GUI can pick it up even if it starts late
+        try:
+            self.node_status_timer = self.create_timer(2.0, self._publish_node_status)
+        except Exception:
+            self.node_status_timer = None
 
         # Job setup
         self.job_order = []
@@ -76,6 +83,21 @@ class Job_Scheduler_Node(Node):
         self.get_logger().info("Listening on 'User_Input' topic.")
         self.get_logger().info("Listening on 'Maintenance_Queue' topic.")
         self.get_logger().info("Listening on 'Completed' topic.")
+        # initial announcement
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
+
+    def _publish_node_status(self):
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
 
     def generate_job_ID(self, user_input_data) -> Dict[str, Any]:
         """
@@ -187,7 +209,8 @@ class Job_Scheduler_Node(Node):
                         "tolerance_mm": user_input_data["tolerance_mm"],
                         "produce_amount": user_input_data["produce_amount"],
                         "material": user_input_data["material"],
-                        "status": "PENDING"
+                        "status": "PENDING",
+                        "mode": user_input_data.get("mode", "FAST")
                     }
             # Add job to job order list
             self.pending_operations.append(task)

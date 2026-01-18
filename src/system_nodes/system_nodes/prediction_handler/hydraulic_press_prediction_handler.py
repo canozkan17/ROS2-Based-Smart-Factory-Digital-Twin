@@ -48,14 +48,21 @@ stage0_threshold: Dict[str, Any] = {}
 models: Dict[str, Any] = {"stage0": None, "stage1": None, "base": None, "stage2a": None}
 _eps = 1e-9
 
+# Running cycle timing state (set on first incoming window, cleared in reset_state)
+_cycle_start_minute = None
+_cycle_max_seen_minute = None
+
 # State management
 def reset_state():
     """
     Reset temporary buffers.
     """
-    global sensors_raw
+    global sensors_raw, _cycle_start_minute, _cycle_max_seen_minute
 
     sensors_raw = {}
+    # Clear recorded cycle timing state so subsequent runs start fresh
+    _cycle_start_minute = None
+    _cycle_max_seen_minute = None
 
 
 # Model & config loading
@@ -126,9 +133,14 @@ def load_models(models_dir: str = None): # type: ignore
     if os.path.exists(stage0_th_path):
         with open(stage0_th_path, "r") as f:
             s0 = json.load(f)
+            # Enforce training notebook policy: use prob_threshold=0.7 for Stage-0
+            try:
+                s0['prob_threshold'] = 0.7
+            except Exception:
+                pass
             globals()['stage0_threshold'] = s0
             try:
-                print(f"[TEMP:DEBUG] hydraulic_press stage0_threshold loaded: keys={list(s0.keys())}")
+                print(f"[TEMP:DEBUG] hydraulic_press stage0_threshold loaded/overridden: keys={list(s0.keys())}, prob_threshold={s0.get('prob_threshold')}")
             except Exception:
                 pass
 
@@ -300,12 +312,12 @@ def apply_feature_engineering(sensor_data: List[Dict[str, Any]]) -> Dict[str, fl
 
     last_sample = sensor_data[-1]
     
-    # GLOBAL SENSOR RANGES for degradation_index (matches training)
+    # GLOBAL SENSOR RANGES for degradation_index (must match training EXACTLY)
     GLOBAL_RANGES = {
-        'vibration': (0.2, 2.5),
-        'oil_temperature': (50.0, 95.0),
-        'hydraulic_pressure': (150.0, 250.0),
-        'oil_contamination': (1.0, 8.0),
+        'vibration': (0.11, 12.60),
+        'oil_temperature': (46.23, 815.08),
+        'hydraulic_pressure': (76.03, 201.0),
+        'oil_contamination': (1.63, 27.85),
     }
     
     # Cache sensor arrays (RPI optimization: compute once)
@@ -347,14 +359,33 @@ def apply_feature_engineering(sensor_data: List[Dict[str, Any]]) -> Dict[str, fl
 
     # time_position & time_progress
     time_arr = get_arr("elapsed_minutes")
-    if not np.all(np.isnan(time_arr)):
-        tmin, tmax, tlast = float(np.nanmin(time_arr)), float(np.nanmax(time_arr)), float(time_arr[-1])
-        engineered["time_position"] = (tlast - tmin) / (tmax - tmin + _eps)
-        engineered["time_progress"] = float(n) / max(1, n)  # cumulative position approximation
+    global _cycle_start_minute, _cycle_max_seen_minute, base_config
+    if time_arr.size > 0 and not np.all(np.isnan(time_arr)):
+        tlast = float(time_arr[-1])
+        tmin_window = float(np.nanmin(time_arr))
+        tmax_window = float(np.nanmax(time_arr))
+        # initialize cycle start minute from first observed sample (first window's first minute)
+        if _cycle_start_minute is None:
+            _cycle_start_minute = float(time_arr[0])
+        # update running maximum observed elapsed minute (proxy for observed progress)
+        if _cycle_max_seen_minute is None or tmax_window > _cycle_max_seen_minute:
+            _cycle_max_seen_minute = float(tmax_window)
+
+        baseline_samples = int(base_config.get('baseline_samples', 100)) if base_config else 100
+        # Estimate cycle length in minutes using training min_rul_hours as a lower bound
+        min_rul_hours = float(base_config.get('min_rul_hours', 0.0)) if base_config else 0.0
+        est_cycle_length_min = max(_cycle_max_seen_minute - _cycle_start_minute, min_rul_hours * 60.0, float(baseline_samples))
+
+        # time_position: fraction of elapsed minutes vs estimated cycle length
+        engineered["time_position"] = (tlast - _cycle_start_minute) / max(_eps, est_cycle_length_min)
+        engineered["time_position"] = float(min(1.0, max(0.0, engineered["time_position"])))
+
+        # time_progress: fraction of observed samples vs baseline_samples (conservative warm-up)
+        engineered["time_progress"] = float(min(1.0, float(n) / max(1, baseline_samples)))
     else:
-        engineered["time_position"] = float((n - 1) / max(1, n - 1))
-        engineered["time_progress"] = float(n) / max(1, n)
-    
+        # fallback to conservative progress estimates when no time array available
+        engineered["time_position"] = 0.0
+        engineered["time_progress"] = float(min(1.0, float(n) / max(1, int(base_config.get('baseline_samples', 100)) if base_config else 100)))    
     # vibration_energy: rolling_mean(5) ** 2
     vib_arr = get_arr('vibration')
     if vib_arr.size >= 5:
@@ -652,9 +683,9 @@ def predict(sensor_data: List[Dict[str, Any]]):
         thresh_dbg = 0.7
     print(f"[TEMP:DEBUG] stage0: pred={stage0_pred}, prob={stage0_prob}, thresh={thresh_dbg}, X_clf_shape={X_clf.shape}")
 
-    # Interpret stage0_pred: empirical mapping indicates stage0_pred==1 corresponds to LONG_TERM
+    # Interpret stage0_pred: 1 => NEAR_TERM, 0 => LONG_TERM (match notebook labeling)
     # LONG_TERM -> Base model
-    if stage0_pred == 1:
+    if stage0_pred == 0:
         if models.get("base") is None:
             raise RuntimeError("Base model not loaded")
         base_log = float(models["base"].predict(X_base).ravel()[0])
@@ -663,7 +694,7 @@ def predict(sensor_data: List[Dict[str, Any]]):
 
         # TEMP:DEBUG - log base model raw and converted values
         try:
-            print(f"[TEMP:DEBUG] LONG_TERM base (interpreting stage0_pred==1 as LONG_TERM): base_log={base_log}, base_hr(expm1)={base_hr}, base_min_before_clamp={base_hr*60.0}, X_base_shape={X_base.shape}")
+            print(f"[TEMP:DEBUG] LONG_TERM base (interpreting stage0_pred==0 as LONG_TERM): base_log={base_log}, base_hr(expm1)={base_hr}, base_min_before_clamp={base_hr*60.0}, X_base_shape={X_base.shape}")
         except Exception:
             pass
 
@@ -779,13 +810,38 @@ def predict(sensor_data: List[Dict[str, Any]]):
                 }
 
 def _clamp_rul_minutes(model: str, val_min: float) -> float:
+    """Clamp model outputs to training pipeline operating ranges.
+
+    - Base model: enforce minimum RUL (minutes) from base_config['min_rul_hours'] if available
+      (fallback to 5000 minutes if not present) to match training pipeline behavior.
+    - Stage-2A: enforce maximum RUL if present in stage2a_config['max_rul_min'] (unchanged).
+    """
     global base_config, stage2a_config
     v = float(val_min)
 
-    # NOTE: Do NOT apply an artificial minimum clamp from base_config['min_rul_hours'].
-    # The Base model must be able to predict the full RUL range without being forced to a floor.
+    # Minimum clamp for Base model (match training notebook behavior)
+    min_min = None
+    if model == "base":
+        try:
+            if base_config and "min_rul_hours" in base_config:
+                min_min = float(base_config["min_rul_hours"]) * 60.0
+            else:
+                # Fallback to the notebook's BASE_MODEL_MIN_RUL_MIN
+                min_min = 5000.0
+        except Exception:
+            min_min = 5000.0
 
-    # maximum: prefer stage2a_config['max_rul_min'] for Stage-2A only
+    if min_min is not None:
+        try:
+            v = max(v, float(min_min))
+            try:
+                print(f"[TEMP:DEBUG] Applied base min clamp: min_min={min_min}, value_after_min_clamp={v}")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # Maximum: prefer stage2a_config['max_rul_min'] for Stage-2A only
     max_min = None
     if model == "stage2a" and stage2a_config and "max_rul_min" in stage2a_config:
         try:

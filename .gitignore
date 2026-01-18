@@ -30,8 +30,10 @@ filtered_analysis.txt
 sensor_lifecycle_lookup.json
 .ros_launch_pid
 start_system.sh
-StartSystem.bat
-streamlit_gui.py
-system_nodes_launcher.desktop
-.tools/log_analysis/
-parse_rul_log.py
+*.tools/log_analysis/
+master_log_analyzer.py
+tests/
+test/
+tools/
+logs/
+logs_analysis_output/

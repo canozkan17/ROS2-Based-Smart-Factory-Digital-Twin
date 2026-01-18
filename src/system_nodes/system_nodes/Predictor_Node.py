@@ -36,16 +36,16 @@ class Predictor_Node(Node):
         super().__init__('Predictor_Node')
         
         # Subscription to machine_hydraulic_press_node  TODO!!
-        self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 10)
+        self.subscription_hydraulic_press_node = self.create_subscription(String, 'Sensors/hydraulic_press', self.listener_hydraulic_press_callback, 100)
         
         # Subscription to machine_process_pump_node
-        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 10)
+        self.subscription_process_pump_node = self.create_subscription(String, 'Sensors/process_pump', self.listener_process_pump_callback, 100)
 
 
         # Publishers for predictions
         self.prediction_publishers = {
-                                        "hydraulic_press": self.create_publisher(String, "Predictions/hydraulic_press", 10),
-                                        "process_pump": self.create_publisher(String, "Predictions/process_pump", 10)
+                                        "hydraulic_press": self.create_publisher(String, "Predictions/hydraulic_press", 100),
+                                        "process_pump": self.create_publisher(String, "Predictions/process_pump", 100)
                                     }    
         
         # Adress setup
@@ -54,12 +54,12 @@ class Predictor_Node(Node):
 
         # Process Pump variables
         self.pump_history = []                      # for all the cycles
-        self.pump_rolling_window = 20                # minimum samples for rolling calculations (matches WINDOW_SHORT)
+        self.pump_rolling_window = 60                # minimum samples for rolling calculations (matches WINDOW_SHORT)
         self.predicted_rul_process_pump = None
 
         # Hydraulic Press variables
         self.hydraulic_press_history = []
-        self.hydraulic_press_rolling_window = 20
+        self.hydraulic_press_rolling_window = 100
         self.predicted_rul_hydraulic_press = None
 
         # Load models and features into memory
@@ -73,6 +73,27 @@ class Predictor_Node(Node):
         # Set-up logs
         self.get_logger().info("Predictor node ready!")
         self.get_logger().info("Listening on 'Sensors/ ' topic. For 2 machine sensors")
+        # Publisher for node status
+        self.publisher_node_status = self.create_publisher(String, "Node_Status", 10)
+        self._node_status = 'READY'
+        try:
+            self.node_status_timer = self.create_timer(2.0, self._publish_node_status)
+        except Exception:
+            self.node_status_timer = None
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
+
+    def _publish_node_status(self):
+        try:
+            msg = String()
+            msg.data = json.dumps({"node": self.get_name(), "status": self._node_status})
+            self.publisher_node_status.publish(msg)
+        except Exception:
+            pass
 
     # PROCESS PUMP MACHINE METHOD
     def listener_process_pump_callback(self, msg: String):
