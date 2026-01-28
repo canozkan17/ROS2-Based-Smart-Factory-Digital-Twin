@@ -124,80 +124,80 @@ def generate_cycle(cycle_id: int, total_rul: int, rng: np.random.Generator) -> p
     noise_multiplier = 1.0 + degradation_factor
     
     hydraulic_pressure = (
-        base_pressure
-        - pressure_drop_rate * t * near_term_factor * critical_boost
-        + rng.normal(0.0, pressure_noise_base, size=total_rul) * noise_multiplier
-    )
+                            base_pressure
+                            - pressure_drop_rate * t * near_term_factor * critical_boost
+                            + rng.normal(0.0, pressure_noise_base, size=total_rul) * noise_multiplier
+                        )
 
     oil_temperature = (
-        base_oil_temp
-        + oil_temp_rate * t * near_term_factor * critical_boost
-        + rng.normal(0.0, oil_temp_noise, size=total_rul) * (1.0 + 0.5 * degradation_factor)
-    )
+                        base_oil_temp
+                        + oil_temp_rate * t * near_term_factor * critical_boost
+                        + rng.normal(0.0, oil_temp_noise, size=total_rul) * (1.0 + 0.5 * degradation_factor)
+                    )
 
     oil_contamination = (
-        base_contamination
-        + contamination_growth * t * near_term_factor * critical_boost
-        + rng.normal(0.0, contamination_noise, size=total_rul) * noise_multiplier
-    )
+                            base_contamination
+                            + contamination_growth * t * near_term_factor * critical_boost
+                            + rng.normal(0.0, contamination_noise, size=total_rul) * noise_multiplier
+                        )
 
     ram_position_deviation = (
-        base_ram_dev
-        + ram_dev_growth * t * near_term_factor * critical_boost
-        + rng.normal(0.0, ram_dev_noise, size=total_rul) * noise_multiplier
-    )
+                                base_ram_dev
+                                + ram_dev_growth * t * near_term_factor * critical_boost
+                                + rng.normal(0.0, ram_dev_noise, size=total_rul) * noise_multiplier
+                            )
 
     press_force = (
-        base_force
-        - force_loss_rate * t * near_term_factor * critical_boost
-        + rng.normal(0.0, force_noise, size=total_rul) * (1.0 + 0.3 * degradation_factor)
-    )
+                    base_force
+                    - force_loss_rate * t * near_term_factor * critical_boost
+                    + rng.normal(0.0, force_noise, size=total_rul) * (1.0 + 0.3 * degradation_factor)
+                )
 
     # Vibration: S-curve growth pattern (exponential near failure)
     # This creates distinct signatures for LONG_TERM vs NEAR_TERM vs CRITICAL
     vibration_profile = (failure_vibration - base_vibration) * (
-        # Slow growth in early life
-        0.1 * fraction +
-        # Accelerated growth in near-term
-        0.3 * (rel_near ** 2) +
-        # Rapid growth in critical region
-        0.6 * (rel_critical ** 1.5)
-    )
+                                                                    # Slow growth in early life
+                                                                    0.1 * fraction +
+                                                                    # Accelerated growth in near-term
+                                                                    0.3 * (rel_near ** 2) +
+                                                                    # Rapid growth in critical region
+                                                                    0.6 * (rel_critical ** 1.5)
+                                                                )
     vibration = (
-        base_vibration
-        + vibration_profile
-        + rng.normal(0.0, vibration_noise_base, size=total_rul) * noise_multiplier
-    )
+                    base_vibration
+                    + vibration_profile
+                    + rng.normal(0.0, vibration_noise_base, size=total_rul) * noise_multiplier
+                )
 
     flow_rate = (
-        base_flow
-        - flow_loss_rate * t * near_term_factor * critical_boost
-        + rng.normal(0.0, flow_noise, size=total_rul) * noise_multiplier
-    )
+                    base_flow
+                    - flow_loss_rate * t * near_term_factor * critical_boost
+                    + rng.normal(0.0, flow_noise, size=total_rul) * noise_multiplier
+                )
 
     motor_current = (
-        base_current
-        + current_growth_rate * t * near_term_factor * critical_boost
-        + rng.normal(0.0, current_noise_base, size=total_rul) * (1.0 + 0.5 * degradation_factor)
-    )
+                        base_current
+                        + current_growth_rate * t * near_term_factor * critical_boost
+                        + rng.normal(0.0, current_noise_base, size=total_rul) * (1.0 + 0.5 * degradation_factor)
+                    )
 
 
     # DATAFRAME
     df = pd.DataFrame({
-        "cycle_id": cycle_id,
-        "time_min": t.astype(int),
-        "total_rul": int(total_rul),
-        "current_rul": current_rul.astype(int),
+                        "cycle_id": cycle_id,
+                        "time_min": t.astype(int),
+                        "total_rul": int(total_rul),
+                        "current_rul": current_rul.astype(int),
 
-        "hydraulic_pressure": hydraulic_pressure.astype(float),
-        "oil_temperature": oil_temperature.astype(float),
-        "oil_contamination": oil_contamination.astype(float),
-        "ram_position_deviation": ram_position_deviation.astype(float),
-        "press_force": press_force.astype(float),
-        "vibration": vibration.astype(float),
-        "flow_rate": flow_rate.astype(float),
-        "motor_current": motor_current.astype(float),
-    })
+                        "hydraulic_pressure": hydraulic_pressure.astype(float),
+                        "oil_temperature": oil_temperature.astype(float),
+                        "oil_contamination": oil_contamination.astype(float),
+                        "ram_position_deviation": ram_position_deviation.astype(float),
+                        "press_force": press_force.astype(float),
+                        "vibration": vibration.astype(float),
+                        "flow_rate": flow_rate.astype(float),
+                        "motor_current": motor_current.astype(float),
+                    })
 
     return df
 

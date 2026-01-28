@@ -58,7 +58,7 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
 
 #### ROS2 Node Graph
 
-![ROS2 Node Graph](rosgraph_v2.png)
+![ROS2 Node Graph](rosgraph_v3.png)
 
 > The graph above shows the current ROS2 communication structure. 
 
@@ -83,15 +83,22 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
 - **Process Pump Prediction Handler**  
   Handles model loading and feature engineering for process pump RUL prediction. See [prediction_handler/process_pump_prediction_handler.py](src/system_nodes/system_nodes/prediction_handler/process_pump_prediction_handler.py).
 - **Hydraulic Press Prediction Handler**  
-  Will handle model loading and feature engineering for hydraulic press RUL prediction.
+  Handles model loading and feature engineering for hydraulic press RUL prediction. See [prediction_handler/hydraulic_press_prediction_handler.py](src/system_nodes/system_nodes/prediction_handler/hydraulic_press_prediction_handler.py).
 ---
 
-## Roadmap
+## Release: v1.0 — Project Complete
 
-- [ ] **Containerization:** Implement a `Dockerfile` for standardized deployment across Edge clusters.
-- [ ] **Maintenance Queue:** Integrate bi-directional repair scheduling between Controller and Scheduler.
-- [ ] **Visualization:** Replace CLI with a Streamlit/Grafana real-time monitoring dashboard.
-- [ ] **Hydraulic Press ML:** Apply the validated ML pipeline to the Hydraulic Press dataset.
+This repository contains a completed, stable implementation of the ROS2-based Digital Twin predictive maintenance framework. Highlights:
+
+- ✅ **Core nodes:** Fully implemented and tested (`Machine_Hydraulic_Press_Node`, `Machine_Process_Pump_Node`, `Job_Scheduler_Node`, `Predictor_Node`, `Controller_Node`).
+- ✅ **Maintenance Queue:** Integrated — `Controller_Node` publishes maintenance schedules to `Maintenance_Queue` and `Job_Scheduler_Node` handles scheduling and feedback.
+- ✅ **Visualization:** Streamlit dashboard available (`streamlit_gui.py`). Run with:
+  ```bash
+  streamlit run streamlit_gui.py
+  ```
+- ✅ **Hydraulic Press ML:** Trained models and feature configs are included under `models_and_features/hydraulic_press/` (ONNX and joblib artifacts).
+
+For testing: unit and parity tests are available in `tests/` (run with `pytest tests/`).
 
 ---
 
@@ -130,9 +137,13 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
    ros2 launch system_nodes multi_node_launch.py
    ```
 
-6. **(Optional) Run individual nodes:**
+6. **(Optional) Run individual nodes and GUI:**
    ```bash
+   # Run a single node
    ros2 run system_nodes <node_executable>
+
+   # Run the Streamlit dashboard (recommended GUI)
+   streamlit run streamlit_gui.py
    ```
    Replace `<node_executable>` with one of:
    - hydraulic_press_sensor
@@ -141,7 +152,7 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
    - predictor
    - controller
 
-7. **Use the temp GUI node to trigger the "production":**
+   The legacy CLI GUI is still available:
    ```bash
    ros2 run system_nodes temp_gui
    ```

@@ -32,7 +32,6 @@ sensor_lifecycle_lookup.json
 start_system.sh
 *.tools/log_analysis/
 master_log_analyzer.py
-tests/
 test/
 tools/
 logs/
