@@ -86,17 +86,17 @@ Initially, public RUL datasets were evaluated but found insufficient (limited cy
   Handles model loading and feature engineering for hydraulic press RUL prediction. See [prediction_handler/hydraulic_press_prediction_handler.py](src/system_nodes/system_nodes/prediction_handler/hydraulic_press_prediction_handler.py).
 ---
 
-## Release: v1.0 — Project Complete
+## Release: v1.0 - Project Complete
 
 This repository contains a completed, stable implementation of the ROS2-based Digital Twin predictive maintenance framework. Highlights:
 
-- ✅ **Core nodes:** Fully implemented and tested (`Machine_Hydraulic_Press_Node`, `Machine_Process_Pump_Node`, `Job_Scheduler_Node`, `Predictor_Node`, `Controller_Node`).
-- ✅ **Maintenance Queue:** Integrated — `Controller_Node` publishes maintenance schedules to `Maintenance_Queue` and `Job_Scheduler_Node` handles scheduling and feedback.
-- ✅ **Visualization:** Streamlit dashboard available (`streamlit_gui.py`). Run with:
+- **Core nodes:** Fully implemented and tested (`Machine_Hydraulic_Press_Node`, `Machine_Process_Pump_Node`, `Job_Scheduler_Node`, `Predictor_Node`, `Controller_Node`).
+- **Maintenance Queue:** Integrated - `Controller_Node` publishes maintenance schedules to `Maintenance_Queue` and `Job_Scheduler_Node` handles scheduling and feedback.
+- **Visualization:** Streamlit dashboard available (`streamlit_gui.py`). Run with:
   ```bash
   streamlit run streamlit_gui.py
   ```
-- ✅ **Hydraulic Press ML:** Trained models and feature configs are included under `models_and_features/hydraulic_press/` (ONNX and joblib artifacts).
+- **Hydraulic Press ML:** Trained models and feature configs are included under `models_and_features/hydraulic_press/` (ONNX and joblib artifacts).
 
 For testing: unit and parity tests are available in `tests/` (run with `pytest tests/`).
 
